@@ -9,6 +9,17 @@ import "strings"
 // Matching is by the item key's base (the part before the first "[") plus its parameters,
 // which keeps multi-instance sensors (per-mount disk, per-interface network) distinct.
 
+// cpuUtilKeep is the set of CPU-utilization states shown in the curated view ("" = the
+// overall/aggregate item). Other states (nice/interrupt/softirq/guest/…) go to "All sensors".
+var cpuUtilKeep = map[string]bool{
+	"":       true,
+	"user":   true,
+	"system": true,
+	"iowait": true,
+	"idle":   true,
+	"steal":  true,
+}
+
 // categoryOrder controls how categories are grouped/sorted in the curated view.
 var categoryOrder = map[string]int{
 	"Ping":        0,
@@ -71,10 +82,14 @@ func classifyItem(key, name string) (string, string, bool) {
 		return "Ping", "ICMP response time", true
 
 	case "system.cpu.util":
-		// The Linux template has one item per CPU state (idle/user/system/iowait/…), all
-		// sharing this base key; the state parameter keeps them distinct.
-		if t := param(p, 1); t != "" {
-			return "CPU", "CPU utilization (" + t + ")", true
+		// The Linux template has one item per CPU state, most of them near-zero noise. Keep
+		// only the meaningful states in the curated view; the rest fall under "All sensors".
+		state := param(p, 1)
+		if !cpuUtilKeep[state] {
+			return "", "", false
+		}
+		if state != "" {
+			return "CPU", "CPU utilization (" + state + ")", true
 		}
 		return "CPU", "CPU utilization", true
 	case "system.cpu.load":

@@ -11,6 +11,15 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.15] - 2026-08-12
+
+### Changed
+- **Trimmed CPU-state noise** in the curated view: "Key sensors" now shows only the meaningful
+  CPU utilization states (overall + user/system/iowait/idle/steal); the near-zero states
+  (nice/interrupt/softirq/guest/…) remain available under "All sensors".
+
+---
+
 ## [0.0.14] - 2026-08-12
 
 ### Changed
