@@ -10,9 +10,10 @@ import (
 // Config holds runtime configuration, all sourced from environment variables so the
 // container is configured purely via `docker run -e ...` / --env-file.
 type Config struct {
-	Listen        string // ARGUS_LISTEN, e.g. ":8080"
-	ZabbixAPIURL  string // ARGUS_ZABBIX_API_URL
-	DataDir       string // ARGUS_DATA_DIR, SQLite + CA store live here (mounted volume)
+	Listen         string // ARGUS_LISTEN, e.g. ":8080"
+	ZabbixAPIURL   string // ARGUS_ZABBIX_API_URL
+	ZabbixAPIToken string // ARGUS_ZABBIX_API_TOKEN, for authenticated read calls
+	DataDir        string // ARGUS_DATA_DIR, SQLite + CA store live here (mounted volume)
 	AdminEmail    string // ARGUS_ADMIN_EMAIL, used once to seed the first admin
 	AdminPassword string // ARGUS_ADMIN_PASSWORD, used once to seed the first admin
 	CookieSecure  bool   // ARGUS_COOKIE_SECURE, set true when served over HTTPS
@@ -31,9 +32,10 @@ func (c Config) PasskeysEnabled() bool {
 
 func Load() Config {
 	return Config{
-		Listen:        env("ARGUS_LISTEN", ":8080"),
-		ZabbixAPIURL:  env("ARGUS_ZABBIX_API_URL", ""),
-		DataDir:       env("ARGUS_DATA_DIR", "/data"),
+		Listen:         env("ARGUS_LISTEN", ":8080"),
+		ZabbixAPIURL:   env("ARGUS_ZABBIX_API_URL", ""),
+		ZabbixAPIToken: env("ARGUS_ZABBIX_API_TOKEN", ""),
+		DataDir:        env("ARGUS_DATA_DIR", "/data"),
 		AdminEmail:    env("ARGUS_ADMIN_EMAIL", ""),
 		AdminPassword: env("ARGUS_ADMIN_PASSWORD", ""),
 		CookieSecure:  envBool("ARGUS_COOKIE_SECURE", false),

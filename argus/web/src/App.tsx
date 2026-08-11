@@ -5,6 +5,19 @@ type Me = { email: string; name: string; surname: string; role: string; mfa_enab
 type User = { id: number; email: string; name: string; surname: string; role: string; mfa_enabled?: boolean; passkeys?: number }
 type Health = { status: string; zabbix: { reachable: boolean; version?: string; error?: string } }
 type Passkey = { id: string; name: string; created: string; last_used: string | null }
+type Host = { id: string; name: string; enabled: boolean; problems: number; severity: number; state: string }
+type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean }
+
+const stateColor: Record<string, string> = { ok: 'seagreen', warning: '#d9a441', error: 'crimson' }
+
+function relTime(unix: number): string {
+  if (!unix) return 'never'
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - unix)
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
+}
 
 const ROLES = ['admin', 'helpdesk', 'viewer']
 
@@ -152,7 +165,7 @@ function Login({ onSuccess, passkeysAvailable }: { onSuccess: (m: Me) => void; p
 }
 
 function AppShell({ me, onLogout, passkeysAvailable }: { me: Me; onLogout: () => void; passkeysAvailable: boolean }) {
-  const [view, setView] = useState<'dashboard' | 'users' | 'account'>('dashboard')
+  const [view, setView] = useState<'dashboard' | 'monitoring' | 'users' | 'account'>('dashboard')
   async function logout() { await fetch('/api/logout', { method: 'POST' }).catch(() => {}); onLogout() }
   const tab = (id: typeof view, label: string) => (
     <button onClick={() => setView(id)} style={{ ...ghost, borderColor: view === id ? '#2f6f4f' : '#333' }}>{label}</button>
@@ -160,8 +173,9 @@ function AppShell({ me, onLogout, passkeysAvailable }: { me: Me; onLogout: () =>
   return (
     <Frame>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '1rem 0 1.25rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           {tab('dashboard', 'Dashboard')}
+          {tab('monitoring', 'Monitoring')}
           {me.role === 'admin' && tab('users', 'Users')}
           {tab('account', 'Account')}
         </div>
@@ -171,6 +185,7 @@ function AppShell({ me, onLogout, passkeysAvailable }: { me: Me; onLogout: () =>
         </div>
       </div>
       {view === 'dashboard' && <DashboardView />}
+      {view === 'monitoring' && <MonitoringView />}
       {view === 'users' && me.role === 'admin' && <UsersView />}
       {view === 'account' && <AccountView passkeysAvailable={passkeysAvailable} />}
     </Frame>
@@ -196,6 +211,92 @@ function DashboardView() {
         </ul>
       )}
     </section>
+  )
+}
+
+function MonitoringView() {
+  const [hosts, setHosts] = useState<Host[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [openId, setOpenId] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch('/api/hosts')
+      .then(async (r) => { if (!r.ok) { setError(await errText(r, 'Failed to load hosts')); return } setHosts(await r.json()) })
+      .catch(() => setError('Failed to load hosts'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  return (
+    <section style={card}>
+      <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Hosts</h2>
+      {loading && <p>Loading…</p>}
+      {error && <p style={{ color: 'crimson' }}>{error}</p>}
+      {!loading && !error && hosts.length === 0 && <p style={{ color: '#888' }}>No hosts found.</p>}
+      <div style={{ display: 'grid', gap: '0.4rem' }}>
+        {hosts.map((h) => (
+          <div key={h.id}>
+            <button
+              onClick={() => setOpenId(openId === h.id ? null : h.id)}
+              style={{ ...ghost, width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', textAlign: 'left', borderColor: openId === h.id ? '#2f6f4f' : '#333' }}
+            >
+              <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: h.enabled ? (stateColor[h.state] || '#777') : '#555' }} />
+              <span style={{ fontWeight: 600 }}>{h.name}</span>
+              {!h.enabled && <span style={{ color: '#777', fontSize: '0.8rem' }}>(disabled)</span>}
+              {h.problems > 0 && (
+                <span style={{ marginLeft: 'auto', color: stateColor[h.state] || '#aaa', fontSize: '0.85rem' }}>
+                  {h.problems} problem{h.problems === 1 ? '' : 's'}
+                </span>
+              )}
+            </button>
+            {openId === h.id && <HostItems hostId={h.id} />}
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function HostItems({ hostId }: { hostId: string }) {
+  const [items, setItems] = useState<SensorItem[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setItems(null); setError(null)
+    fetch(`/api/hosts/${hostId}/items`)
+      .then(async (r) => { if (!r.ok) { setError(await errText(r, 'Failed to load sensors')); return } setItems(await r.json()) })
+      .catch(() => setError('Failed to load sensors'))
+  }, [hostId])
+
+  if (error) return <p style={{ color: 'crimson', margin: '0.4rem 0 0.8rem' }}>{error}</p>
+  if (!items) return <p style={{ color: '#888', margin: '0.4rem 0 0.8rem' }}>Loading sensors…</p>
+  if (items.length === 0) return <p style={{ color: '#888', margin: '0.4rem 0 0.8rem' }}>No sensors.</p>
+
+  return (
+    <div style={{ overflowX: 'auto', margin: '0.3rem 0 0.8rem', border: '1px solid #262626', borderRadius: 6 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+        <thead>
+          <tr style={{ textAlign: 'left', color: '#aaa' }}>
+            <th style={{ padding: '0.4rem 0.6rem' }}>Sensor</th>
+            <th style={{ padding: '0.4rem 0.6rem' }}>Value</th>
+            <th style={{ padding: '0.4rem 0.6rem' }}>Last check</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it) => (
+            <tr key={it.id} style={{ borderTop: '1px solid #262626', opacity: it.supported ? 1 : 0.55 }}>
+              <td style={{ padding: '0.4rem 0.6rem' }}>{it.name}</td>
+              <td style={{ padding: '0.4rem 0.6rem' }}>
+                {it.supported
+                  ? <span><strong>{it.last_value || '—'}</strong>{it.units ? ` ${it.units}` : ''}</span>
+                  : <span style={{ color: '#c66' }}>not supported</span>}
+              </td>
+              <td style={{ padding: '0.4rem 0.6rem', color: '#999' }}>{relTime(it.last_clock)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 

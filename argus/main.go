@@ -34,7 +34,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	zbx := zabbix.New(cfg.ZabbixAPIURL)
+	zbx := zabbix.New(cfg.ZabbixAPIURL, cfg.ZabbixAPIToken)
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,

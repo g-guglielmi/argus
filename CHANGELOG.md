@@ -11,6 +11,30 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.8] - 2026-08-11
+
+**Read path — hosts & sensors.** The first monitoring-facing feature: Argus now reads live
+data from Zabbix and shows it. A flat host list with per-host sensor values; graphs land next.
+
+### Added
+- **Monitoring** tab: lists Zabbix hosts with a status dot (OK / Warning / Error, derived from
+  active trigger severity) and a problem count. Click a host to expand its **sensors** with the
+  latest value + units and how long ago each was checked.
+- **Authenticated Zabbix client**: read calls use an API token via a Bearer header
+  (Zabbix 7.0 style). New methods `host.get`, `item.get`, `trigger.get`.
+- Endpoints: `GET /api/hosts`, `GET /api/hosts/{id}/items` (any signed-in user).
+- New config: `ARGUS_ZABBIX_API_TOKEN` (create it in Zabbix under Users → API tokens).
+
+### Notes
+- Severity mapping: Zabbix info/unclassified → OK, warning → Warning, average/high/disaster →
+  Error. Without a token the health probe still works but Monitoring returns a clear error.
+
+### Not yet (upcoming slices)
+- Per-sensor history/trend **graphs** with the 2h/2d/1M/3M/6M/1Y time tabs, self-service email
+  reset, login rate-limiting, and the probe enrollment/PKI backend.
+
+---
+
 ## [0.0.7] - 2026-08-11
 
 ### Changed
