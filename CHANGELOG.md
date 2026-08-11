@@ -11,6 +11,22 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.10] - 2026-08-11
+
+**Show what's actually wrong.** A host's problem count now has detail behind it.
+
+### Added
+- Expanding a host shows an **Active problems** panel listing each firing trigger (name +
+  severity color), and the **sensor row(s)** a problem references are highlighted and
+  left-barred in the trigger's severity color.
+- Endpoint `GET /api/hosts/{id}/problems` (via `trigger.get` with `selectItems`).
+
+### Notes
+- Some triggers reference an item that isn't in the visible list (or a computed expression),
+  so the problem still appears in the panel even when no specific row highlights.
+
+---
+
 ## [0.0.9] - 2026-08-11
 
 ### Fixed

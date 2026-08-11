@@ -87,6 +87,38 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+type problemView struct {
+	Name     string   `json:"name"`
+	Severity int      `json:"severity"`
+	State    string   `json:"state"`
+	ItemIDs  []string `json:"item_ids"`
+}
+
+func (s *Server) handleHostProblems(w http.ResponseWriter, r *http.Request) {
+	if !s.zbx.Authenticated() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Zabbix API token not configured (set ARGUS_ZABBIX_API_TOKEN)"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+
+	triggers, err := s.zbx.HostProblems(ctx, r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Zabbix: " + err.Error()})
+		return
+	}
+	out := make([]problemView, 0, len(triggers))
+	for _, t := range triggers {
+		sev := atoi(t.Priority)
+		pv := problemView{Name: t.Description, Severity: sev, State: severityState(sev), ItemIDs: []string{}}
+		for _, it := range t.Items {
+			pv.ItemIDs = append(pv.ItemIDs, it.ItemID)
+		}
+		out = append(out, pv)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 	if !s.zbx.Authenticated() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Zabbix API token not configured (set ARGUS_ZABBIX_API_TOKEN)"})

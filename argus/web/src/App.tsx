@@ -7,8 +7,10 @@ type Health = { status: string; zabbix: { reachable: boolean; version?: string; 
 type Passkey = { id: string; name: string; created: string; last_used: string | null }
 type Host = { id: string; name: string; enabled: boolean; problems: number; severity: number; state: string }
 type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean }
+type Problem = { name: string; severity: number; state: string; item_ids: string[] }
 
 const stateColor: Record<string, string> = { ok: 'seagreen', warning: '#d9a441', error: 'crimson' }
+const stateRank: Record<string, number> = { ok: 0, warning: 1, error: 2 }
 
 function relTime(unix: number): string {
   if (!unix) return 'never'
@@ -272,48 +274,83 @@ function MonitoringView() {
 
 function HostItems({ hostId }: { hostId: string }) {
   const [items, setItems] = useState<SensorItem[] | null>(null)
+  const [problems, setProblems] = useState<Problem[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    setItems(null); setError(null)
-    fetch(`/api/hosts/${hostId}/items`)
-      .then(async (r) => { if (!r.ok) { setError(await errText(r, 'Failed to load sensors')); return } setItems(await r.json()) })
+    setItems(null); setProblems([]); setError(null)
+    Promise.all([
+      fetch(`/api/hosts/${hostId}/items`).then((r) => (r.ok ? r.json() : Promise.reject(new Error('items')))),
+      fetch(`/api/hosts/${hostId}/problems`).then((r) => (r.ok ? r.json() : [])),
+    ])
+      .then(([its, probs]: [SensorItem[], Problem[]]) => { setItems(its); setProblems(probs || []) })
       .catch(() => setError('Failed to load sensors'))
   }, [hostId])
 
   if (error) return <p style={{ color: 'crimson', margin: '0.4rem 0 0.8rem' }}>{error}</p>
   if (!items) return <p style={{ color: '#888', margin: '0.4rem 0 0.8rem' }}>Loading sensors…</p>
-  if (items.length === 0) return <p style={{ color: '#888', margin: '0.4rem 0 0.8rem' }}>No sensors.</p>
+
+  // Map each problem-referenced item to its worst state, so we can highlight those rows.
+  const itemState: Record<string, string> = {}
+  for (const p of problems) {
+    for (const id of p.item_ids) {
+      if (!itemState[id] || stateRank[p.state] > stateRank[itemState[id]]) itemState[id] = p.state
+    }
+  }
 
   return (
-    <div style={{ margin: '0.3rem 0 0.8rem', border: '1px solid #262626', borderRadius: 6, overflow: 'hidden' }}>
-      <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-        <colgroup>
-          <col style={{ width: '32%' }} />
-          <col />
-          <col style={{ width: '110px' }} />
-        </colgroup>
-        <thead>
-          <tr style={{ textAlign: 'left', color: '#aaa' }}>
-            <th style={{ padding: '0.4rem 0.6rem' }}>Sensor</th>
-            <th style={{ padding: '0.4rem 0.6rem' }}>Value</th>
-            <th style={{ padding: '0.4rem 0.6rem', whiteSpace: 'nowrap' }}>Last check</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((it) => (
-            <tr key={it.id} style={{ borderTop: '1px solid #262626', opacity: it.supported ? 1 : 0.55 }}>
-              <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>{it.name}</td>
-              <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
-                {it.supported
-                  ? <span><strong>{fmtValue(it.last_value) || '—'}</strong>{it.units ? ` ${it.units}` : ''}</span>
-                  : <span style={{ color: '#c66' }}>not supported</span>}
-              </td>
-              <td style={{ padding: '0.4rem 0.6rem', color: '#999', whiteSpace: 'nowrap' }}>{relTime(it.last_clock)}</td>
-            </tr>
+    <div style={{ margin: '0.3rem 0 0.8rem' }}>
+      {problems.length > 0 && (
+        <div style={{ border: '1px solid #4a2a2a', background: '#1e1414', borderRadius: 6, padding: '0.5rem 0.75rem', marginBottom: '0.5rem' }}>
+          <div style={{ color: '#c88', fontSize: '0.8rem', marginBottom: '0.25rem' }}>Active problems</div>
+          {problems.map((p, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.15rem 0' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: stateColor[p.state] || '#aaa' }} />
+              <span>{p.name}</span>
+            </div>
           ))}
-        </tbody>
-      </table>
+        </div>
+      )}
+      {items.length === 0
+        ? <p style={{ color: '#888', margin: '0.2rem 0 0.4rem' }}>No sensors.</p>
+        : (
+          <div style={{ border: '1px solid #262626', borderRadius: 6, overflow: 'hidden' }}>
+            <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+              <colgroup>
+                <col style={{ width: '32%' }} />
+                <col />
+                <col style={{ width: '110px' }} />
+              </colgroup>
+              <thead>
+                <tr style={{ textAlign: 'left', color: '#aaa' }}>
+                  <th style={{ padding: '0.4rem 0.6rem' }}>Sensor</th>
+                  <th style={{ padding: '0.4rem 0.6rem' }}>Value</th>
+                  <th style={{ padding: '0.4rem 0.6rem', whiteSpace: 'nowrap' }}>Last check</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it) => {
+                  const st = itemState[it.id]
+                  return (
+                    <tr key={it.id} style={{
+                      borderTop: '1px solid #262626',
+                      opacity: it.supported ? 1 : 0.55,
+                      background: st ? (st === 'error' ? 'rgba(180,40,40,0.16)' : 'rgba(217,164,65,0.14)') : undefined,
+                    }}>
+                      <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word', borderLeft: `3px solid ${st ? stateColor[st] : 'transparent'}` }}>{it.name}</td>
+                      <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
+                        {it.supported
+                          ? <span><strong>{fmtValue(it.last_value) || '—'}</strong>{it.units ? ` ${it.units}` : ''}</span>
+                          : <span style={{ color: '#c66' }}>not supported</span>}
+                      </td>
+                      <td style={{ padding: '0.4rem 0.6rem', color: '#999', whiteSpace: 'nowrap' }}>{relTime(it.last_clock)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
     </div>
   )
 }

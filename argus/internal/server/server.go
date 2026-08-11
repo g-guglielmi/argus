@@ -65,6 +65,7 @@ func New(cfg config.Config, zbx *zabbix.Client, st *store.Store, logger *slog.Lo
 	// monitoring read path (any signed-in user)
 	mux.HandleFunc("GET /api/hosts", auth.RequireAuth(s.handleHosts))
 	mux.HandleFunc("GET /api/hosts/{id}/items", auth.RequireAuth(s.handleHostItems))
+	mux.HandleFunc("GET /api/hosts/{id}/problems", auth.RequireAuth(s.handleHostProblems))
 
 	// self-service MFA (any signed-in user)
 	mux.HandleFunc("GET /api/me/mfa", auth.RequireAuth(s.handleMFAStatus))

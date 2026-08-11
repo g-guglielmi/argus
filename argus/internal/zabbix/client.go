@@ -169,3 +169,28 @@ func (c *Client) ActiveTriggers(ctx context.Context) ([]Trigger, error) {
 	var triggers []Trigger
 	return triggers, c.call(ctx, "trigger.get", params, true, &triggers)
 }
+
+type ProblemTrigger struct {
+	Description string `json:"description"` // the trigger/problem name
+	Priority    string `json:"priority"`    // severity 0..5
+	Items       []struct {
+		ItemID string `json:"itemid"`
+	} `json:"items"`
+}
+
+// HostProblems returns the active problem triggers on one host, worst first, each with the
+// item(s) it references so the UI can point at the offending sensor.
+func (c *Client) HostProblems(ctx context.Context, hostID string) ([]ProblemTrigger, error) {
+	params := map[string]any{
+		"output":        []string{"description", "priority"},
+		"selectItems":   []string{"itemid"},
+		"hostids":       hostID,
+		"filter":        map[string]any{"value": 1},
+		"monitored":     true,
+		"skipDependent": true,
+		"sortfield":     "priority",
+		"sortorder":     "DESC",
+	}
+	var triggers []ProblemTrigger
+	return triggers, c.call(ctx, "trigger.get", params, true, &triggers)
+}
