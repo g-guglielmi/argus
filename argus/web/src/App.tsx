@@ -27,17 +27,50 @@ function relTime(unix: number): string {
   return `${Math.floor(s / 86400)}d ago`
 }
 
-// fmtValue rounds numeric readings (2 decimals for |v|>=1, 4 for small values so sub-second
-// timings don't collapse to 0), strips trailing zeros, and leaves non-numeric values (text,
-// checksums) untouched.
-function fmtValue(raw: string): string {
-  const t = (raw ?? '').trim()
-  if (t === '') return ''
-  const n = Number(t)
-  if (!isFinite(n)) return raw
+// roundNum rounds to 2 decimals for |v|>=1 and 4 for small values (so sub-second timings
+// don't collapse to 0), stripping trailing zeros.
+function roundNum(n: number): string {
   if (Number.isInteger(n)) return String(n)
   const decimals = Math.abs(n) >= 1 ? 2 : 4
   return String(parseFloat(n.toFixed(decimals)))
+}
+
+// scaleBytes turns a byte count into a human-readable [value, unit] (1024-based).
+function scaleBytes(n: number, suffix: string): [string, string] {
+  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  let v = n, i = 0
+  while (Math.abs(v) >= 1024 && i < u.length - 1) { v /= 1024; i++ }
+  return [i === 0 ? String(Math.round(v)) : String(parseFloat(v.toFixed(2))), u[i] + suffix]
+}
+
+// fmtNumParts formats a numeric reading into [value, unit], scaling byte units.
+function fmtNumParts(n: number, units: string): [string, string] {
+  if (units === 'B') return scaleBytes(n, '')
+  if (units === 'Bps') return scaleBytes(n, 'ps')
+  return [roundNum(n), units || '']
+}
+
+function fmtNum(n: number, units: string): string {
+  const [v, u] = fmtNumParts(n, units)
+  return u ? `${v} ${u}` : v
+}
+
+// readingParts formats a raw stored value into [display, unit]; non-numeric values (text,
+// checksums) are returned untouched with no unit.
+function readingParts(raw: string, units: string): [string, string] {
+  const t = (raw ?? '').trim()
+  if (t === '') return ['—', '']
+  const n = Number(t)
+  if (!isFinite(n)) return [raw, '']
+  return fmtNumParts(n, units)
+}
+
+// lastVal returns the most recent non-null value of a uPlot data series.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function lastVal(u: any, sidx: number): number | null {
+  const arr = u.data[sidx]
+  for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) return arr[i]
+  return null
 }
 
 const ROLES = ['admin', 'helpdesk', 'viewer']
@@ -371,7 +404,7 @@ function HostItems({ hostId }: { hostId: string }) {
                         </td>
                         <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
                           {it.supported
-                            ? <span><strong>{fmtValue(it.last_value) || '—'}</strong>{it.units ? ` ${it.units}` : ''}</span>
+                            ? (() => { const [dv, du] = readingParts(it.last_value, it.units); return <span><strong>{dv}</strong>{du ? ` ${du}` : ''}</span> })()
                             : <span style={{ color: '#c66' }}>not supported</span>}
                         </td>
                         <td style={{ padding: '0.4rem 0.6rem', color: '#999', whiteSpace: 'nowrap' }}>{relTime(it.last_clock)}</td>
@@ -401,8 +434,19 @@ function buildPlot(data: Series, units: string, width: number): [uPlot.Options, 
   const axisStroke = '#8a8a8a'
   const grid = { stroke: 'rgba(255,255,255,0.06)', width: 1 }
   const ticks = { stroke: 'rgba(255,255,255,0.06)', width: 1 }
-  const yAxis: uPlot.Axis = { stroke: axisStroke, grid, ticks, size: 60 }
+  const isBytes = units === 'B' || units === 'Bps'
+  // Byte-scaled y-axis ticks; otherwise default numeric.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const yValues = isBytes ? ((_u: any, splits: number[]) => splits.map((v) => fmtNum(v, units))) : undefined
+  const yAxis: uPlot.Axis = { stroke: axisStroke, grid, ticks, size: 64, values: yValues as unknown as uPlot.Axis['values'] }
   const xAxis: uPlot.Axis = { stroke: axisStroke, grid, ticks }
+  // Legend cells: show the hovered point, or fall back to the latest value when idle (so the
+  // legend is never blank). unitLabel is omitted for bytes since the value already carries it.
+  const unitLabel = isBytes ? '' : units ? ` (${units})` : ''
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const xVal = (u: any, v: number | null) => { const t = v ?? lastVal(u, 0); return t == null ? '--' : new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const yVal = (sidx: number) => (u: any, v: number | null) => { const n = v ?? lastVal(u, sidx); return n == null ? '--' : fmtNum(n, units) }
   const base: Partial<uPlot.Options> = { width, height: 260, scales: { x: { time: true } }, axes: [xAxis, yAxis], legend: { show: true } }
 
   if (data.kind === 'trend') {
@@ -412,10 +456,10 @@ function buildPlot(data: Series, units: string, width: number): [uPlot.Options, 
     const opts: uPlot.Options = {
       ...base,
       series: [
-        {},
-        { label: `avg${units ? ' (' + units + ')' : ''}`, stroke: GREEN, width: 1.5 },
-        { label: 'min', stroke: 'rgba(79,160,111,0.4)', width: 1 },
-        { label: 'max', stroke: 'rgba(79,160,111,0.4)', width: 1 },
+        { value: xVal },
+        { label: `avg${unitLabel}`, stroke: GREEN, width: 1.5, value: yVal(1) },
+        { label: 'min', stroke: 'rgba(79,160,111,0.4)', width: 1, value: yVal(2) },
+        { label: 'max', stroke: 'rgba(79,160,111,0.4)', width: 1, value: yVal(3) },
       ],
       bands: [{ series: [3, 2], fill: 'rgba(79,160,111,0.12)' }],
     } as uPlot.Options
@@ -425,7 +469,7 @@ function buildPlot(data: Series, units: string, width: number): [uPlot.Options, 
   const vs = data.points.map((p) => (p.v ?? null))
   const opts: uPlot.Options = {
     ...base,
-    series: [{}, { label: `value${units ? ' (' + units + ')' : ''}`, stroke: GREEN, width: 1.5, fill: 'rgba(79,160,111,0.10)' }],
+    series: [{ value: xVal }, { label: `value${unitLabel}`, stroke: GREEN, width: 1.5, fill: 'rgba(79,160,111,0.10)', value: yVal(1) }],
   } as uPlot.Options
   return [opts, [xs, vs] as uPlot.AlignedData]
 }

@@ -56,6 +56,11 @@ func classifyItem(key, name string) (string, string, bool) {
 		return "Ping", "ICMP response time", true
 
 	case "system.cpu.util":
+		// The Linux template has one item per CPU state (idle/user/system/iowait/…), all
+		// sharing this base key; the state parameter keeps them distinct.
+		if t := param(p, 1); t != "" {
+			return "CPU", "CPU utilization (" + t + ")", true
+		}
 		return "CPU", "CPU utilization", true
 	case "system.cpu.load":
 		if a := param(p, 1); a != "" {

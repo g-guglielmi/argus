@@ -11,6 +11,20 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.13] - 2026-08-12
+
+### Changed
+- **Byte values are now human-readable** — sizes/throughput auto-scale to KB/MB/GB/TB
+  (1024-based) in both the sensor table and the graphs, instead of raw bytes.
+- **CPU utilization rows are labeled by state** (idle/user/system/iowait/…) instead of a dozen
+  identical "CPU utilization" rows sharing the `system.cpu.util` base key.
+
+### Fixed
+- **Graph legend no longer shows "--" when idle** — it now displays the latest point's time and
+  value when the cursor isn't over the chart, and formats them (scaled units, readable time).
+
+---
+
 ## [0.0.12] - 2026-08-11
 
 **Curated sensor views.** The Monitoring view no longer dumps every raw template item.
