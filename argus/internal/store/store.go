@@ -116,6 +116,47 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 	return &u, nil
 }
 
+func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,email,name,surname,password_hash,role,created_at FROM users ORDER BY email`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		var u User
+		var created int64
+		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Surname, &u.PasswordHash, &u.Role, &created); err != nil {
+			return nil, err
+		}
+		u.CreatedAt = time.Unix(created, 0)
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateUserProfile(ctx context.Context, id int64, name, surname, role string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET name=?,surname=?,role=? WHERE id=?`, name, surname, role, id)
+	return err
+}
+
+func (s *Store) UpdatePassword(ctx context.Context, id int64, hash string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash=? WHERE id=?`, hash, id)
+	return err
+}
+
+func (s *Store) DeleteUser(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) CountAdmins(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role='admin'`).Scan(&n)
+	return n, err
+}
+
 // --- sessions ---
 
 func (s *Store) CreateSession(ctx context.Context, id string, userID int64, expires time.Time) error {

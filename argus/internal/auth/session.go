@@ -66,6 +66,22 @@ func RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// RequireRole rejects requests unless the authenticated user has the given role.
+func RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := UserFrom(r.Context())
+		if !ok {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if u.Role != role {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func SetSessionCookie(w http.ResponseWriter, raw string, secure bool, ttl time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,

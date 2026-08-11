@@ -11,6 +11,26 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.3] - 2026-08-11
+
+**User management.** Makes the role model usable — admins can now manage the other accounts.
+
+### Added
+- Admin-only **user management**: list users, create, change role, reset password, delete.
+- **Role enforcement** on the user endpoints (helpdesk/viewer receive 403).
+- **Change-my-password** for any signed-in user (verifies the current password).
+- Guardrails: you can't delete your own account, can't delete or demote the **last admin**,
+  passwords must be ≥ 8 characters, and a duplicate email returns a clear conflict.
+- Endpoints: `GET`/`POST /api/users`, `PATCH`/`DELETE /api/users/{id}`,
+  `POST /api/users/{id}/password`, `POST /api/me/password`.
+- UI: top navigation (Dashboard / Users / Account), a Users table with an add-user form and
+  per-row role/reset/delete controls, and an Account password-change form.
+
+### Not yet (upcoming slices)
+- TOTP MFA, WebAuthn passkeys, self-service email reset, and the probe enrollment/PKI backend.
+
+---
+
 ## [0.0.2] - 2026-08-11
 
 **Authentication.** Adds persistent users, password login with sessions, and the role model —

@@ -35,6 +35,15 @@ func New(cfg config.Config, zbx *zabbix.Client, st *store.Store, logger *slog.Lo
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", auth.RequireAuth(s.handleMe))
+	mux.HandleFunc("POST /api/me/password", auth.RequireAuth(s.handleChangeOwnPassword))
+
+	// user management (admin only)
+	mux.HandleFunc("GET /api/users", auth.RequireRole("admin", s.handleListUsers))
+	mux.HandleFunc("POST /api/users", auth.RequireRole("admin", s.handleCreateUser))
+	mux.HandleFunc("PATCH /api/users/{id}", auth.RequireRole("admin", s.handleUpdateUser))
+	mux.HandleFunc("DELETE /api/users/{id}", auth.RequireRole("admin", s.handleDeleteUser))
+	mux.HandleFunc("POST /api/users/{id}/password", auth.RequireRole("admin", s.handleResetPassword))
+
 	mux.Handle("/", spaHandler())
 
 	// Every request passes through session resolution first.
