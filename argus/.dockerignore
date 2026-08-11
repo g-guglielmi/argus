@@ -1,0 +1,6 @@
+# build context is ./argus
+web/node_modules
+web/dist
+*.md
+.env
+.env.*

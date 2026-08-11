@@ -1,0 +1,157 @@
+# Phase 0 — Deployment Kit (Foundations)
+
+Goal of Phase 0: stand up the **core** (Zabbix server + web + PostgreSQL/TimescaleDB) and
+**one probe** (site1) that connects to the core over **mutual TLS**, proving one device
+flows end-to-end. Everything else builds on this.
+
+> ⚠️ These scripts run on your Linux VM / unRAID, not on the machine Claude runs on.
+> They are **reviewed starting points**, not tested-in-your-env artifacts. Read each one,
+> adjust OS/version/paths, and we iterate as you run them.
+
+## Architecture recap (see ../docs/DESIGN.md)
+
+```
+Probe (site)  --active mTLS-->  core:10051   (proxy INITIATES; no inbound at the site)
+Core VM: zabbix-server + zabbix-web (API) + PostgreSQL+TimescaleDB
+```
+
+- **Active proxy** = the probe dials out to the core. Remote sites need only **outbound**
+  to `core:10051`. The **core** is the only side that publishes an inbound port.
+- **mTLS**: a small private CA signs one server cert (core) and one client cert per probe.
+
+## Runbook (do in this order)
+
+### 1. Generate the PKI  → `pki/gen-certs.sh`
+Run once, anywhere with `openssl` (ideally on the core VM). Produces:
+- `ca.crt` / `ca.key` — your monitoring CA (keep `ca.key` safe/offline).
+- `zabbix-core.crt` / `.key` — server cert for the core.
+- `proxy-<site>.crt` / `.key` — one client cert per site (site1, site2, site3, site4, site5).
+
+Copy `ca.crt` + `zabbix-core.*` to the core; copy `ca.crt` + `proxy-<site>.*` to each probe.
+**Never copy `ca.key` or other sites' keys to a probe.**
+
+### 2. Stand up the core  → `core/setup-core.sh`
+Debian 12 / Ubuntu 24.04 assumed (apt). Installs Zabbix 7.0 LTS, PostgreSQL 16 +
+TimescaleDB, creates the DB, imports schema, enables Timescale compression/partitioning.
+Then apply the TLS + tuning snippet: `core/zabbix_server.conf.snippet`.
+
+After it's up:
+- Zabbix web UI (admin engine room) on the VM — lock it to the private network / admin only.
+- Publish **TCP 10051** to wherever probes will reach it (LAN via Site Magic today; a NAT/
+  HAProxy TCP-passthrough rule for future no-VPN sites).
+
+### 3. Register the site1 proxy in Zabbix
+In the Zabbix web UI → **Data collection → Proxies → Create proxy**:
+- Proxy name: `proxy-site1` (must match the probe's `ZBX_HOSTNAME`).
+- Mode: **Active**.
+- Encryption → **Connections from proxy: Certificate**; Issuer `CN=Monitoring Core CA`,
+  Subject `CN=proxy-site1` (pins this exact probe).
+
+### 4. Deploy the site1 probe  → `probe/run-probe.sh` (or unRAID XML)
+- On the unRAID box: import `unraid/zabbix-proxy-site1.xml` via Community Applications
+  → **Add Container**, fill in the core host + cert paths.
+- Elsewhere (the Docker VM sites): `probe/run-probe.sh site1 core.example.lan`.
+
+### 5. Prove the pipeline
+Add one test host in Zabbix (e.g. the UniFi gateway IP) assigned to `proxy-site1`
+with a single ICMP ping item. Confirm data arrives through the proxy. Then pull the
+core's network briefly and confirm the proxy buffers + flushes on reconnect.
+
+## Official docs vs. this script
+
+They do the **same base steps** — the Zabbix installer page (repo → packages → DB → schema)
+is now confirmed exact for Debian 13 / Zabbix 7.0. `setup-core.sh` automates those *and* adds
+three things the basic doc flow does **not** cover: **TimescaleDB**, the **TLS config** for
+proxies, and **retention** tuning.
+
+Recommended: run `setup-core.sh` for the whole thing, but keep the official page open as the
+reference. Two steps stay **manual either way** (neither the docs nor the script can finish them
+headless):
+- **Nginx**: uncomment `listen`/`server_name` in `/etc/zabbix/nginx.conf`, then restart nginx + php-fpm.
+- **Frontend setup wizard** in the browser (DB connection, admin password, timezone).
+
+If you'd rather follow the docs by hand for the base install, do that, then apply only the
+TimescaleDB block from `setup-core.sh` + the `zabbix_server.conf.snippet`. Same result.
+
+## Adding a new remote site later
+
+The CA never changes — you only mint one new leaf:
+1. `cd pki && ./gen-certs.sh <newsite>` — reuses the existing CA, leaves other certs untouched.
+2. Copy `out/ca.crt` + `out/proxy-<newsite>.crt` + `out/proxy-<newsite>.key` to that probe (its key ONLY).
+3. Deploy the probe: `probe/run-probe.sh <newsite> <core-host>` (or duplicate the unRAID XML, swapping the site name).
+4. In the Zabbix UI: register active proxy `proxy-<newsite>`, certificate encryption,
+   issuer `CN=Monitoring Core CA`, subject `CN=proxy-<newsite>`.
+
+Never copy `ca.key` or another site's key to the probe.
+
+## What Phase 0 deliberately does NOT include
+- Auto-discovery / UniFi sweep (Phase 4) — here we hand-add one host to prove the path.
+- The custom app / UI / notifier (Phases 1–5).
+- The other 4 probes — clone steps 3–4 once site1 works.
+
+## Files
+| File | Purpose |
+|---|---|
+| `pki/gen-certs.sh` | Create CA + core cert + per-site probe certs |
+| `core/setup-core.sh` | Install & configure Zabbix + PostgreSQL + TimescaleDB |
+| `core/zabbix_server.conf.snippet` | TLS + DB + tuning settings for the server |
+| `probe/run-probe.sh` | Parametrized `docker run` for a probe (active proxy, mTLS, 7-day buffer) |
+| `unraid/zabbix-proxy-site1.xml` | unRAID Community Applications template for the site1 probe |
+
+## Troubleshooting / known issues
+
+### TimescaleDB too new for Zabbix 7.0 (version regression)
+
+**Symptoms**
+- `zabbix-server` refuses to start; log shows:
+  `Unsupported DB! timescaledb version 22901 is newer than 22899` /
+  `TimescaleDB version is too new. Recommended version is up to TimescaleDB Community Edition 2.28.`
+- Administration → Housekeeping shows: *"Unsupported TimescaleDB ... Should not be higher than 2.28."*
+  and **compression cannot be enabled/managed** by Zabbix.
+
+**Cause**
+The TimescaleDB apt repo (packagecloud) ships ahead of what each Zabbix LTS certifies. On
+this build the repo installed **2.29.1** while Zabbix **7.0.29** supports only up to **2.28.x**.
+Zabbix gates on this: it won't manage native compression, and by default won't even start.
+
+**Prevention (fresh installs)**
+`setup-core.sh` now auto-selects the newest **2.28.x** TimescaleDB at install time and
+`apt-mark hold`s it, so new cores never hit this. `AllowUnsupportedDBVersions=1` remains in
+`zabbix_server.conf.snippet` as a safety net (lets the server *run* on an unsupported version,
+but Zabbix still won't manage compression until you're on 2.28).
+
+**Fix on a live box (what was done here — safe because the DB was empty).**
+Downgrade TimescaleDB to the newest 2.28.x, pin it, then recreate the empty `zabbix` DB so the
+extension is created at the supported version:
+```bash
+# 1. find newest supported 2.28.x (prints e.g. 2.28.3~debian13-1710)
+TS_VER=$(apt-cache madison timescaledb-2-postgresql-17 | awk '{print $3}' | grep -E '^2\.28' | head -1); echo "$TS_VER"
+
+# 2. stop server, downgrade + hold TimescaleDB, restart postgres
+sudo systemctl stop zabbix-server && sudo apt-get install -y --allow-downgrades \
+  timescaledb-2-postgresql-17=$TS_VER timescaledb-2-loader-postgresql-17=$TS_VER \
+  && sudo apt-mark hold timescaledb-2-postgresql-17 timescaledb-2-loader-postgresql-17 \
+  && sudo systemctl restart postgresql
+
+# 3. recreate the empty DB + extension at 2.28
+sudo -u postgres psql -c "DROP DATABASE zabbix WITH (FORCE);" \
+  && sudo -u postgres createdb -O zabbix zabbix \
+  && sudo -u postgres psql -d zabbix -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"
+
+# 4. re-import Zabbix schema + Timescale hypertable conversion
+zcat /usr/share/zabbix-sql-scripts/postgresql/server.sql.gz | sudo -u zabbix psql zabbix \
+  && sudo -u zabbix psql zabbix -f "$(ls /usr/share/zabbix-sql-scripts/postgresql/timescaledb/schema.sql 2>/dev/null || ls /usr/share/zabbix-sql-scripts/postgresql/timescaledb.sql)"
+
+# 5. start + verify (no "too new" line)
+sudo systemctl start zabbix-server && sleep 3 && sudo tail -n 20 /var/log/zabbix/zabbix_server.log
+```
+
+**Aftermath — recreating the DB resets state stored in the DB:**
+- Admin login goes back to `Admin` / `zabbix` → log in and change the password again.
+- Per-user + system **timezone and theme** reset → User profile (theme/timezone) and
+  Administration → General → GUI (system defaults).
+- The frontend config file (`/etc/zabbix/web/zabbix.conf.php`) is untouched, so the DB
+  connection and the `Monitoring` instance name survive.
+
+Harmless output to ignore during the fix: `character varying ... does not follow best practices`
+WARNINGs (Timescale hints), and any old-kernel `autoremove` note.

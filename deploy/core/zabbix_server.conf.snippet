@@ -1,0 +1,32 @@
+# Append these to /etc/zabbix/zabbix_server.conf, then restart zabbix-server.
+# Place the certs (from pki/gen-certs.sh) under /etc/zabbix/certs/ owned by zabbix, mode 600 on the key.
+
+### --- mutual TLS (proxies authenticate with client certs signed by our CA) ---
+TLSCAFile=/etc/zabbix/certs/ca.crt
+TLSCertFile=/etc/zabbix/certs/zabbix-core.crt
+TLSKeyFile=/etc/zabbix/certs/zabbix-core.key
+# Per-proxy issuer/subject pinning is configured per-proxy in the web UI
+# (Data collection -> Proxies -> Encryption), not here.
+
+### --- allow TimescaleDB newer than Zabbix's tested matrix ---
+# The TimescaleDB apt repo ships ahead of what each Zabbix LTS certifies (e.g. TS 2.29
+# vs Zabbix 7.0's supported <=2.28). A single minor ahead is compatible in practice;
+# this flag lets the server start instead of refusing on the version gate.
+AllowUnsupportedDBVersions=1
+
+### --- listen for proxy connections (this is the ONE inbound port to publish) ---
+ListenPort=10051
+
+### --- capacity tuning for ~5 proxies / a few hundred items (adjust as you grow) ---
+StartPollers=10
+StartPreprocessors=6
+StartDBSyncers=6
+CacheSize=64M
+HistoryCacheSize=32M
+ValueCacheSize=64M
+Timeout=10
+
+### --- logging ---
+LogType=file
+LogFile=/var/log/zabbix/zabbix_server.log
+LogFileSize=50
