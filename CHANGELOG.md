@@ -12,6 +12,32 @@ follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`).
 
 ---
 
+## [0.1.0] - 2026-08-11
+
+**Authentication.** Adds persistent users, password login with sessions, and the role model —
+the first real feature on top of the skeleton.
+
+### Added
+- **Embedded SQLite** persistence in the data volume (`argus.db`) for users and sessions.
+- **Password login** using argon2id hashing and server-side sessions (HttpOnly cookie; session
+  ids are stored hashed, so a DB leak can't yield usable tokens).
+- **Three roles** recorded on each user: `admin`, `helpdesk`, `viewer`.
+- **First-run admin bootstrap** from `ARGUS_ADMIN_EMAIL` / `ARGUS_ADMIN_PASSWORD` (only when the
+  database has no users yet).
+- **Endpoints:** `POST /api/login`, `POST /api/logout`, `GET /api/me` (auth-protected).
+- **UI:** a sign-in screen and an authenticated dashboard showing the current user, role, and a
+  log-out button.
+
+### Changed
+- New configuration: `ARGUS_ADMIN_EMAIL`, `ARGUS_ADMIN_PASSWORD`, `ARGUS_COOKIE_SECURE`.
+- Image now builds with Go 1.24 and resolves modules via `go mod tidy` at build time.
+
+### Not yet (upcoming slices)
+- Role enforcement on write actions, user-management UI, TOTP MFA, WebAuthn passkeys,
+  self-service password reset, and the probe enrollment/PKI backend.
+
+---
+
 ## [0.0.1] - 2026-08-11
 
 **Initial release.** Establishes the two foundations of the system: a validated Zabbix-based

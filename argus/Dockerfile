@@ -9,13 +9,14 @@ COPY web/ ./
 RUN npm run build          # outputs to /web/dist
 
 # ---- Stage 2: build the Go binary (embeds the frontend) ----
-FROM golang:1.23-alpine AS build
+FROM golang:1.24-alpine AS build
 WORKDIR /src
 COPY go.mod ./
-RUN go mod download
 COPY . .
-# overwrite the placeholder dist with the freshly built assets so go:embed bakes them in
+# bring in the freshly built assets so go:embed bakes them in
 COPY --from=web /web/dist ./web/dist
+# resolve modules (writes go.sum) from actual imports, then build a static binary
+RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /argus .
 
 # ---- Stage 3: minimal runtime ----

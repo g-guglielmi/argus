@@ -10,8 +10,10 @@ import (
 	"syscall"
 	"time"
 
+	"argus/internal/auth"
 	"argus/internal/config"
 	"argus/internal/server"
+	"argus/internal/store"
 	"argus/internal/zabbix"
 )
 
@@ -19,11 +21,24 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	cfg := config.Load()
+
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		logger.Error("open database", "path", cfg.DBPath(), "err", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	if err := bootstrapAdmin(context.Background(), st, cfg, logger); err != nil {
+		logger.Error("bootstrap admin", "err", err)
+		os.Exit(1)
+	}
+
 	zbx := zabbix.New(cfg.ZabbixAPIURL)
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           server.New(cfg, zbx, logger),
+		Handler:           server.New(cfg, zbx, st, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -46,4 +61,28 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// bootstrapAdmin seeds the first admin user from env vars on an empty database.
+func bootstrapAdmin(ctx context.Context, st *store.Store, cfg config.Config, logger *slog.Logger) error {
+	n, err := st.CountUsers(ctx)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	if cfg.AdminEmail == "" || cfg.AdminPassword == "" {
+		logger.Warn("no users exist; set ARGUS_ADMIN_EMAIL and ARGUS_ADMIN_PASSWORD and restart to create the first admin")
+		return nil
+	}
+	hash, err := auth.HashPassword(cfg.AdminPassword)
+	if err != nil {
+		return err
+	}
+	if _, err := st.CreateUser(ctx, store.User{Email: cfg.AdminEmail, Role: "admin", PasswordHash: hash}); err != nil {
+		return err
+	}
+	logger.Info("created initial admin user", "email", cfg.AdminEmail)
+	return nil
 }
