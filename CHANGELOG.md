@@ -11,6 +11,36 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.4] - 2026-08-11
+
+**Two-factor authentication (TOTP).** Optional, self-service, and standards-based so it
+works with authenticator apps and password managers (Bitwarden, 1Password, Google/Microsoft
+Authenticator) — both scanning the QR and pasting the setup key.
+
+### Added
+- **TOTP enrollment** in Account: shows a QR code and the base32 setup key, then confirms
+  with a live 6-digit code before turning MFA on (RFC 6238 defaults: SHA1 / 6 digits / 30s).
+- **Two-step login**: when a user has MFA on, a correct password yields a short-lived
+  challenge (no session yet); the second step verifies the code and then signs in. The code
+  field is marked `autocomplete="one-time-code"` so Bitwarden can autofill it.
+- **One-time recovery codes** (10) generated when MFA is enabled, shown once with copy and
+  download; usable in place of a code at login. Regenerate at any time (re-auth required).
+- **Disable MFA** yourself (re-auth with your password), and an admin **"Reset 2FA"** action
+  on the Users table to recover a locked-out account.
+- Endpoints: `POST /api/login/totp`, `GET`/`POST /api/me/mfa`,
+  `POST /api/me/mfa/{setup,enable,disable,recovery-codes}`, `POST /api/users/{id}/mfa/reset`.
+
+### Changed
+- `GET /api/me` and the user list now report `mfa_enabled`.
+- Additive SQLite migration adds `totp_secret` / `totp_enabled` to existing databases and
+  creates the `recovery_codes` and `mfa_challenges` tables (no manual steps).
+
+### Not yet (upcoming slices)
+- WebAuthn passkeys, self-service email password reset, login rate-limiting, and the probe
+  enrollment/PKI backend.
+
+---
+
 ## [0.0.3] - 2026-08-11
 
 **User management.** Makes the role model usable — admins can now manage the other accounts.

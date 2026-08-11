@@ -10,12 +10,16 @@ import (
 
 	"argus/internal/auth"
 	"argus/internal/config"
+	"argus/internal/mfa"
 	"argus/internal/store"
 	"argus/internal/zabbix"
 	"argus/web"
 )
 
-const sessionTTL = 7 * 24 * time.Hour
+const (
+	sessionTTL      = 7 * 24 * time.Hour
+	mfaChallengeTTL = 10 * time.Minute
+)
 
 type Server struct {
 	cfg       config.Config
@@ -34,8 +38,16 @@ func New(cfg config.Config, zbx *zabbix.Client, st *store.Store, logger *slog.Lo
 	mux.HandleFunc("GET /api/health", s.handleAPIHealth)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
+	mux.HandleFunc("POST /api/login/totp", s.handleLoginTOTP)
 	mux.HandleFunc("GET /api/me", auth.RequireAuth(s.handleMe))
 	mux.HandleFunc("POST /api/me/password", auth.RequireAuth(s.handleChangeOwnPassword))
+
+	// self-service MFA (any signed-in user)
+	mux.HandleFunc("GET /api/me/mfa", auth.RequireAuth(s.handleMFAStatus))
+	mux.HandleFunc("POST /api/me/mfa/setup", auth.RequireAuth(s.handleMFASetup))
+	mux.HandleFunc("POST /api/me/mfa/enable", auth.RequireAuth(s.handleMFAEnable))
+	mux.HandleFunc("POST /api/me/mfa/disable", auth.RequireAuth(s.handleMFADisable))
+	mux.HandleFunc("POST /api/me/mfa/recovery-codes", auth.RequireAuth(s.handleMFARegenRecovery))
 
 	// user management (admin only)
 	mux.HandleFunc("GET /api/users", auth.RequireRole("admin", s.handleListUsers))
@@ -43,6 +55,7 @@ func New(cfg config.Config, zbx *zabbix.Client, st *store.Store, logger *slog.Lo
 	mux.HandleFunc("PATCH /api/users/{id}", auth.RequireRole("admin", s.handleUpdateUser))
 	mux.HandleFunc("DELETE /api/users/{id}", auth.RequireRole("admin", s.handleDeleteUser))
 	mux.HandleFunc("POST /api/users/{id}/password", auth.RequireRole("admin", s.handleResetPassword))
+	mux.HandleFunc("POST /api/users/{id}/mfa/reset", auth.RequireRole("admin", s.handleAdminResetMFA))
 
 	mux.Handle("/", spaHandler())
 
@@ -89,10 +102,15 @@ type loginRequest struct {
 }
 
 type userResponse struct {
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	Surname string `json:"surname"`
-	Role    string `json:"role"`
+	Email      string `json:"email"`
+	Name       string `json:"name"`
+	Surname    string `json:"surname"`
+	Role       string `json:"role"`
+	MFAEnabled bool   `json:"mfa_enabled"`
+}
+
+func toUserResponse(u *store.User) userResponse {
+	return userResponse{Email: u.Email, Name: u.Name, Surname: u.Surname, Role: u.Role, MFAEnabled: u.TOTPEnabled}
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +132,66 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If MFA is enabled, the password alone doesn't authenticate: issue a short-lived
+	// challenge and make the client complete the second factor.
+	if u.TOTPEnabled {
+		raw, id, err := auth.NewSessionToken()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		if err := s.st.CreateMFAChallenge(r.Context(), id, u.ID, time.Now().Add(mfaChallengeTTL)); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"mfa_required": true, "mfa_token": raw})
+		return
+	}
+
+	s.issueSession(w, r, u)
+}
+
+// handleLoginTOTP completes a login that requires a second factor.
+func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MFAToken string `json:"mfa_token"`
+		Code     string `json:"code"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	challengeID := auth.HashToken(req.MFAToken)
+	uid, err := s.st.MFAChallengeUserID(r.Context(), challengeID)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "this sign-in has expired; please start again"})
+		return
+	}
+	u, err := s.st.UserByID(r.Context(), uid)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "this sign-in has expired; please start again"})
+		return
+	}
+
+	// Accept either a current TOTP code or one of the user's one-time recovery codes.
+	valid := mfa.Validate(req.Code, u.TOTPSecret)
+	if !valid {
+		if consumed, _ := s.st.ConsumeRecoveryCode(r.Context(), u.ID, mfa.HashRecoveryCode(req.Code)); consumed {
+			valid = true
+		}
+	}
+	if !valid {
+		// Keep the challenge alive so the user can retry within its short window.
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid code"})
+		return
+	}
+
+	_ = s.st.DeleteMFAChallenge(r.Context(), challengeID) // one-time use
+	s.issueSession(w, r, u)
+}
+
+// issueSession creates a server-side session, sets the cookie, and returns the user.
+func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, u *store.User) {
 	raw, id, err := auth.NewSessionToken()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -124,7 +202,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.SetSessionCookie(w, raw, s.cfg.CookieSecure, sessionTTL)
-	writeJSON(w, http.StatusOK, userResponse{Email: u.Email, Name: u.Name, Surname: u.Surname, Role: u.Role})
+	writeJSON(w, http.StatusOK, toUserResponse(u))
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +215,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context()) // guaranteed present by RequireAuth
-	writeJSON(w, http.StatusOK, userResponse{Email: u.Email, Name: u.Name, Surname: u.Surname, Role: u.Role})
+	writeJSON(w, http.StatusOK, toUserResponse(u))
 }
 
 // --- helpers / static ---

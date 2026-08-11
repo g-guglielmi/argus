@@ -21,15 +21,16 @@ func validRole(role string) bool {
 }
 
 type adminUser struct {
-	ID      int64  `json:"id"`
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	Surname string `json:"surname"`
-	Role    string `json:"role"`
+	ID         int64  `json:"id"`
+	Email      string `json:"email"`
+	Name       string `json:"name"`
+	Surname    string `json:"surname"`
+	Role       string `json:"role"`
+	MFAEnabled bool   `json:"mfa_enabled"`
 }
 
 func toAdminUser(u store.User) adminUser {
-	return adminUser{ID: u.ID, Email: u.Email, Name: u.Name, Surname: u.Surname, Role: u.Role}
+	return adminUser{ID: u.ID, Email: u.Email, Name: u.Name, Surname: u.Surname, Role: u.Role, MFAEnabled: u.TOTPEnabled}
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {

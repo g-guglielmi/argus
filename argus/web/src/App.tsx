@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 
-type Me = { email: string; name: string; surname: string; role: string }
-type User = { id: number; email: string; name: string; surname: string; role: string }
+type Me = { email: string; name: string; surname: string; role: string; mfa_enabled?: boolean }
+type User = { id: number; email: string; name: string; surname: string; role: string; mfa_enabled?: boolean }
 type Health = { status: string; zabbix: { reachable: boolean; version?: string; error?: string } }
 
 const ROLES = ['admin', 'helpdesk', 'viewer']
@@ -10,6 +10,11 @@ const card: CSSProperties = { border: '1px solid #333', borderRadius: 8, padding
 const input: CSSProperties = { padding: '0.5rem 0.6rem', borderRadius: 6, border: '1px solid #333', background: '#111', color: '#e6e6e6', boxSizing: 'border-box' }
 const btn: CSSProperties = { padding: '0.5rem 0.9rem', borderRadius: 6, border: 'none', background: '#2f6f4f', color: 'white', cursor: 'pointer', fontWeight: 600 }
 const ghost: CSSProperties = { padding: '0.4rem 0.7rem', borderRadius: 6, border: '1px solid #333', background: 'transparent', color: '#e6e6e6', cursor: 'pointer' }
+
+async function errText(res: Response, fallback: string) {
+  const j = await res.json().catch(() => ({}))
+  return (j && j.error) || fallback
+}
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null)
@@ -39,22 +44,65 @@ function Login({ onSuccess }: { onSuccess: (m: Me) => void }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // When the account has MFA, the password step returns a short-lived token and we
+  // switch to the code step instead of signing straight in.
+  const [mfaToken, setMfaToken] = useState<string | null>(null)
+  const [code, setCode] = useState('')
 
-  async function submit(e: FormEvent) {
+  async function submitPassword(e: FormEvent) {
     e.preventDefault()
     setBusy(true); setError(null)
     try {
       const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
       if (!res.ok) { setError('Invalid email or password'); return }
+      const data = await res.json()
+      if (data.mfa_required) { setMfaToken(data.mfa_token); return }
+      onSuccess(data)
+    } catch { setError('Could not reach the server') } finally { setBusy(false) }
+  }
+
+  async function submitCode(e: FormEvent) {
+    e.preventDefault()
+    setBusy(true); setError(null)
+    try {
+      const res = await fetch('/api/login/totp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mfa_token: mfaToken, code }) })
+      if (!res.ok) { setError(await errText(res, 'Invalid code')); return }
       onSuccess(await res.json())
     } catch { setError('Could not reach the server') } finally { setBusy(false) }
+  }
+
+  if (mfaToken) {
+    return (
+      <Frame>
+        <section style={{ ...card, maxWidth: 380, marginTop: '1.5rem' }}>
+          <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Two-factor authentication</h2>
+          <p style={{ color: '#aaa', marginTop: 0 }}>Enter the 6-digit code from your authenticator, or a recovery code.</p>
+          <form onSubmit={submitCode}>
+            <input
+              style={{ ...input, width: '100%', marginBottom: '1rem', letterSpacing: '0.15em' }}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              autoComplete="one-time-code"
+              inputMode="numeric"
+              name="otp"
+              placeholder="123456"
+              autoFocus
+              required
+            />
+            {error && <p style={{ color: 'crimson', margin: '0 0 0.75rem' }}>{error}</p>}
+            <button type="submit" disabled={busy} style={{ ...btn, width: '100%' }}>{busy ? 'Verifying…' : 'Verify'}</button>
+          </form>
+          <button onClick={() => { setMfaToken(null); setCode(''); setError(null) }} style={{ ...ghost, width: '100%', marginTop: '0.6rem' }}>Back</button>
+        </section>
+      </Frame>
+    )
   }
 
   return (
     <Frame>
       <section style={{ ...card, maxWidth: 380, marginTop: '1.5rem' }}>
         <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Sign in</h2>
-        <form onSubmit={submit}>
+        <form onSubmit={submitPassword}>
           <label style={{ display: 'block', marginBottom: '0.75rem' }}>Email
             <input style={{ ...input, width: '100%', marginTop: 4 }} type="email" value={email} autoComplete="username" onChange={(e) => setEmail(e.target.value)} required />
           </label>
@@ -126,7 +174,7 @@ function UsersView() {
   function load() { fetch('/api/users').then((r) => r.json()).then(setUsers).catch(() => setError('Failed to load users')) }
   useEffect(() => { load() }, [])
 
-  async function fail(res: Response) { const j = await res.json().catch(() => ({})); setError(j.error || 'Request failed') }
+  async function fail(res: Response) { setError(await errText(res, 'Request failed')) }
 
   async function create(e: FormEvent) {
     e.preventDefault(); setError(null); setMsg(null)
@@ -147,6 +195,13 @@ function UsersView() {
     const res = await fetch(`/api/users/${u.id}/password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) })
     if (!res.ok) return fail(res)
     setMsg(`Password reset for ${u.email}`)
+  }
+  async function resetMfa(u: User) {
+    setError(null); setMsg(null)
+    if (!window.confirm(`Reset two-factor for ${u.email}? They'll sign in with just their password until they set it up again.`)) return
+    const res = await fetch(`/api/users/${u.id}/mfa/reset`, { method: 'POST' })
+    if (!res.ok) return fail(res)
+    setMsg(`Two-factor reset for ${u.email}`); load()
   }
   async function del(u: User) {
     setError(null); setMsg(null)
@@ -169,6 +224,7 @@ function UsersView() {
               <th style={{ padding: '0.4rem 0.5rem' }}>Email</th>
               <th style={{ padding: '0.4rem 0.5rem' }}>Name</th>
               <th style={{ padding: '0.4rem 0.5rem' }}>Role</th>
+              <th style={{ padding: '0.4rem 0.5rem' }}>2FA</th>
               <th style={{ padding: '0.4rem 0.5rem' }}>Actions</th>
             </tr>
           </thead>
@@ -182,8 +238,14 @@ function UsersView() {
                     {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
                   </select>
                 </td>
-                <td style={{ padding: '0.4rem 0.5rem', display: 'flex', gap: '0.4rem' }}>
+                <td style={{ padding: '0.4rem 0.5rem' }}>
+                  {u.mfa_enabled
+                    ? <span style={{ color: 'seagreen', fontWeight: 600 }}>on</span>
+                    : <span style={{ color: '#777' }}>off</span>}
+                </td>
+                <td style={{ padding: '0.4rem 0.5rem', display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                   <button onClick={() => resetPw(u)} style={ghost}>Reset password</button>
+                  {u.mfa_enabled && <button onClick={() => resetMfa(u)} style={ghost}>Reset 2FA</button>}
                   <button onClick={() => del(u)} style={{ ...ghost, borderColor: '#5a2a2a', color: '#e59' }}>Delete</button>
                 </td>
               </tr>
@@ -208,6 +270,15 @@ function UsersView() {
 }
 
 function AccountView() {
+  return (
+    <div style={{ display: 'grid', gap: '1.25rem' }}>
+      <PasswordCard />
+      <MfaCard />
+    </div>
+  )
+}
+
+function PasswordCard() {
   const [cur, setCur] = useState('')
   const [next, setNext] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -216,24 +287,140 @@ function AccountView() {
   async function submit(e: FormEvent) {
     e.preventDefault(); setError(null); setMsg(null)
     const res = await fetch('/api/me/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current_password: cur, new_password: next }) })
-    if (!res.ok) { const j = await res.json().catch(() => ({})); setError(j.error || 'Request failed'); return }
+    if (!res.ok) { setError(await errText(res, 'Request failed')); return }
     setCur(''); setNext(''); setMsg('Password changed')
   }
 
   return (
-    <section style={{ ...card, maxWidth: 420 }}>
+    <section style={{ ...card, maxWidth: 480 }}>
       <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Change my password</h2>
       {error && <p style={{ color: 'crimson' }}>{error}</p>}
       {msg && <p style={{ color: 'seagreen' }}>{msg}</p>}
       <form onSubmit={submit}>
         <label style={{ display: 'block', marginBottom: '0.75rem' }}>Current password
-          <input style={{ ...input, width: '100%', marginTop: 4 }} type="password" value={cur} onChange={(e) => setCur(e.target.value)} required />
+          <input style={{ ...input, width: '100%', marginTop: 4 }} type="password" value={cur} autoComplete="current-password" onChange={(e) => setCur(e.target.value)} required />
         </label>
         <label style={{ display: 'block', marginBottom: '1rem' }}>New password (min 8)
-          <input style={{ ...input, width: '100%', marginTop: 4 }} type="password" value={next} onChange={(e) => setNext(e.target.value)} required />
+          <input style={{ ...input, width: '100%', marginTop: 4 }} type="password" value={next} autoComplete="new-password" onChange={(e) => setNext(e.target.value)} required />
         </label>
         <button type="submit" style={btn}>Update password</button>
       </form>
     </section>
+  )
+}
+
+type Enrollment = { secret: string; otpauth_url: string; qr_data_uri: string }
+
+function MfaCard() {
+  const [enabled, setEnabled] = useState<boolean | null>(null)
+  const [remaining, setRemaining] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [enrollment, setEnrollment] = useState<Enrollment | null>(null)
+  const [code, setCode] = useState('')
+  const [codes, setCodes] = useState<string[] | null>(null)
+
+  function loadStatus() {
+    fetch('/api/me/mfa').then((r) => r.json()).then((d) => { setEnabled(d.enabled); setRemaining(d.recovery_codes_remaining || 0) }).catch(() => setError('Failed to load 2FA status'))
+  }
+  useEffect(() => { loadStatus() }, [])
+
+  async function startSetup() {
+    setError(null); setMsg(null); setCodes(null)
+    const res = await fetch('/api/me/mfa/setup', { method: 'POST' })
+    if (!res.ok) { setError(await errText(res, 'Could not start setup')); return }
+    setEnrollment(await res.json())
+  }
+  async function confirmEnable(e: FormEvent) {
+    e.preventDefault(); setError(null); setMsg(null)
+    const res = await fetch('/api/me/mfa/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) })
+    if (!res.ok) { setError(await errText(res, 'Could not enable 2FA')); return }
+    const d = await res.json()
+    setEnrollment(null); setCode(''); setCodes(d.recovery_codes); setMsg('Two-factor is now on. Save your recovery codes.'); loadStatus()
+  }
+  async function disable() {
+    setError(null); setMsg(null); setCodes(null)
+    const pw = window.prompt('Confirm your password to turn off two-factor:')
+    if (!pw) return
+    const res = await fetch('/api/me/mfa/disable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) })
+    if (!res.ok) { setError(await errText(res, 'Could not disable 2FA')); return }
+    setMsg('Two-factor has been turned off.'); loadStatus()
+  }
+  async function regen() {
+    setError(null); setMsg(null); setCodes(null)
+    const pw = window.prompt('Confirm your password to generate new recovery codes:')
+    if (!pw) return
+    const res = await fetch('/api/me/mfa/recovery-codes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) })
+    if (!res.ok) { setError(await errText(res, 'Could not regenerate codes')); return }
+    const d = await res.json()
+    setCodes(d.recovery_codes); setMsg('New recovery codes generated. The old ones no longer work.'); loadStatus()
+  }
+
+  return (
+    <section style={{ ...card, maxWidth: 480 }}>
+      <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Two-factor authentication</h2>
+      <p style={{ color: '#aaa', marginTop: 0 }}>Use an authenticator app or a password manager such as Bitwarden. Argus uses standard TOTP, so both scanning the QR and pasting the setup key work.</p>
+      {error && <p style={{ color: 'crimson' }}>{error}</p>}
+      {msg && <p style={{ color: 'seagreen' }}>{msg}</p>}
+
+      {enabled === null && <p>Checking…</p>}
+
+      {codes && <RecoveryCodes codes={codes} />}
+
+      {enabled === false && !enrollment && !codes && (
+        <button onClick={startSetup} style={btn}>Enable two-factor</button>
+      )}
+
+      {enabled === false && enrollment && (
+        <div>
+          <p style={{ marginBottom: '0.5rem' }}>1. Scan this QR, or paste the setup key into Bitwarden:</p>
+          <img src={enrollment.qr_data_uri} alt="TOTP QR code" style={{ borderRadius: 8, background: 'white', padding: 8 }} width={200} height={200} />
+          <p style={{ margin: '0.75rem 0 0.25rem', color: '#aaa' }}>Setup key</p>
+          <code style={{ display: 'block', wordBreak: 'break-all', background: '#111', border: '1px solid #333', borderRadius: 6, padding: '0.5rem', fontSize: '0.9rem' }}>{enrollment.secret}</code>
+          <form onSubmit={confirmEnable} style={{ marginTop: '1rem' }}>
+            <p style={{ marginBottom: '0.4rem' }}>2. Enter the current 6-digit code to confirm:</p>
+            <input style={{ ...input, width: '100%', marginBottom: '0.75rem', letterSpacing: '0.15em' }} value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" inputMode="numeric" name="otp" placeholder="123456" required />
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button type="submit" style={btn}>Confirm & enable</button>
+              <button type="button" onClick={() => { setEnrollment(null); setCode(''); setError(null) }} style={ghost}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {enabled === true && (
+        <div>
+          <p><strong style={{ color: 'seagreen' }}>On.</strong> <span style={{ color: '#aaa' }}>{remaining} recovery code{remaining === 1 ? '' : 's'} remaining.</span></p>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button onClick={regen} style={ghost}>Regenerate recovery codes</button>
+            <button onClick={disable} style={{ ...ghost, borderColor: '#5a2a2a', color: '#e59' }}>Turn off</button>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function RecoveryCodes({ codes }: { codes: string[] }) {
+  const text = codes.join('\n')
+  function copy() { navigator.clipboard?.writeText(text).catch(() => {}) }
+  function download() {
+    const blob = new Blob([text + '\n'], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'argus-recovery-codes.txt'; a.click()
+    URL.revokeObjectURL(url)
+  }
+  return (
+    <div style={{ border: '1px solid #4a4a2a', background: '#1e1e14', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1rem' }}>
+      <p style={{ marginTop: 0, color: '#d9d97a' }}>Save these recovery codes now — each works once and they won't be shown again.</p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.25rem 1rem', fontFamily: 'monospace', fontSize: '0.95rem' }}>
+        {codes.map((c) => <span key={c}>{c}</span>)}
+      </div>
+      <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+        <button onClick={copy} style={ghost}>Copy</button>
+        <button onClick={download} style={ghost}>Download</button>
+      </div>
+    </div>
   )
 }
