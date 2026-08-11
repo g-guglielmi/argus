@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -38,7 +39,9 @@ type itemView struct {
 	LastClock int64  `json:"last_clock"` // unix seconds, 0 if never
 	Supported bool   `json:"supported"`
 	Enabled   bool   `json:"enabled"`
-	Numeric   bool   `json:"numeric"` // graphable (value_type float or unsigned)
+	Numeric   bool   `json:"numeric"`            // graphable (value_type float or unsigned)
+	Category  string `json:"category,omitempty"` // set in curated mode
+	Label     string `json:"label,omitempty"`    // friendly name in curated mode
 }
 
 // numericValueType reports whether a Zabbix value_type is graphable (0 float, 3 unsigned).
@@ -136,13 +139,14 @@ func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Zabbix: " + err.Error()})
 		return
 	}
+	all := r.URL.Query().Get("all") == "1"
 	out := make([]itemView, 0, len(items))
 	for _, it := range items {
 		var clock int64
 		if it.LastClock != "" {
 			clock, _ = strconv.ParseInt(it.LastClock, 10, 64)
 		}
-		out = append(out, itemView{
+		iv := itemView{
 			ID:        it.ItemID,
 			Name:      it.Name,
 			Key:       it.Key,
@@ -152,6 +156,22 @@ func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 			Supported: it.State == "0",
 			Enabled:   it.Status == "0",
 			Numeric:   numericValueType(it.ValueType),
+		}
+		if !all {
+			cat, label, ok := classifyItem(it.Key, it.Name)
+			if !ok {
+				continue // hide un-curated "noise" in the default view
+			}
+			iv.Category, iv.Label = cat, label
+		}
+		out = append(out, iv)
+	}
+	if !all {
+		sort.SliceStable(out, func(i, j int) bool {
+			if ci, cj := categoryOrder[out[i].Category], categoryOrder[out[j].Category]; ci != cj {
+				return ci < cj
+			}
+			return out[i].Label < out[j].Label
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

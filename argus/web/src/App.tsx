@@ -8,7 +8,7 @@ type User = { id: number; email: string; name: string; surname: string; role: st
 type Health = { status: string; zabbix: { reachable: boolean; version?: string; error?: string } }
 type Passkey = { id: string; name: string; created: string; last_used: string | null }
 type Host = { id: string; name: string; enabled: boolean; problems: number; severity: number; state: string }
-type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean; numeric: boolean }
+type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean; numeric: boolean; category?: string; label?: string }
 type Problem = { name: string; severity: number; state: string; item_ids: string[] }
 type SeriesPoint = { t: number; v?: number; min?: number; avg?: number; max?: number }
 type Series = { name: string; units: string; kind: 'history' | 'trend'; points: SeriesPoint[] }
@@ -283,15 +283,18 @@ function HostItems({ hostId }: { hostId: string }) {
   const [problems, setProblems] = useState<Problem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [openItem, setOpenItem] = useState<string | null>(null)
+  const [showAll, setShowAll] = useState(false)
 
   useEffect(() => {
-    setItems(null); setProblems([]); setError(null)
-    Promise.all([
-      fetch(`/api/hosts/${hostId}/items`).then((r) => (r.ok ? r.json() : Promise.reject(new Error('items')))),
-      fetch(`/api/hosts/${hostId}/problems`).then((r) => (r.ok ? r.json() : [])),
-    ])
-      .then(([its, probs]: [SensorItem[], Problem[]]) => { setItems(its); setProblems(probs || []) })
+    setItems(null); setError(null)
+    fetch(`/api/hosts/${hostId}/items${showAll ? '?all=1' : ''}`)
+      .then(async (r) => { if (!r.ok) throw new Error('items'); return r.json() })
+      .then((its: SensorItem[]) => setItems(its))
       .catch(() => setError('Failed to load sensors'))
+  }, [hostId, showAll])
+
+  useEffect(() => {
+    fetch(`/api/hosts/${hostId}/problems`).then((r) => (r.ok ? r.json() : [])).then((p) => setProblems(p || [])).catch(() => {})
   }, [hostId])
 
   if (error) return <p style={{ color: 'crimson', margin: '0.4rem 0 0.8rem' }}>{error}</p>
@@ -318,8 +321,12 @@ function HostItems({ hostId }: { hostId: string }) {
           ))}
         </div>
       )}
+      <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.4rem' }}>
+        <button onClick={() => setShowAll(false)} style={{ ...ghost, padding: '0.2rem 0.6rem', fontSize: '0.82rem', borderColor: !showAll ? '#2f6f4f' : '#333' }}>Key sensors</button>
+        <button onClick={() => setShowAll(true)} style={{ ...ghost, padding: '0.2rem 0.6rem', fontSize: '0.82rem', borderColor: showAll ? '#2f6f4f' : '#333' }}>All sensors</button>
+      </div>
       {items.length === 0
-        ? <p style={{ color: '#888', margin: '0.2rem 0 0.4rem' }}>No sensors.</p>
+        ? <p style={{ color: '#888', margin: '0.2rem 0 0.4rem' }}>{showAll ? 'No sensors.' : 'No recognized sensors — try “All sensors”.'}</p>
         : (
           <div style={{ border: '1px solid #262626', borderRadius: 6, overflow: 'hidden' }}>
             <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
@@ -336,12 +343,19 @@ function HostItems({ hostId }: { hostId: string }) {
                 </tr>
               </thead>
               <tbody>
-                {items.map((it) => {
+                {items.map((it, idx) => {
                   const st = itemState[it.id]
                   const open = openItem === it.id
                   const clickable = it.numeric && it.supported
+                  const label = it.label || it.name
+                  const newGroup = !showAll && it.category && it.category !== items[idx - 1]?.category
                   return (
                     <Fragment key={it.id}>
+                      {newGroup && (
+                        <tr>
+                          <td colSpan={3} style={{ padding: '0.5rem 0.6rem 0.25rem', color: '#7fb894', fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.04em', borderTop: idx === 0 ? 'none' : '1px solid #262626' }}>{it.category}</td>
+                        </tr>
+                      )}
                       <tr
                         onClick={clickable ? () => setOpenItem(open ? null : it.id) : undefined}
                         style={{
@@ -353,7 +367,7 @@ function HostItems({ hostId }: { hostId: string }) {
                       >
                         <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word', borderLeft: `3px solid ${st ? stateColor[st] : 'transparent'}` }}>
                           {clickable && <span style={{ color: '#6a6', marginRight: '0.4rem', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>}
-                          {it.name}
+                          {label}
                         </td>
                         <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
                           {it.supported

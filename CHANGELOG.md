@@ -11,6 +11,26 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.12] - 2026-08-11
+
+**Curated sensor views.** The Monitoring view no longer dumps every raw template item.
+
+### Added
+- Items are classified by their Zabbix key into a small set of **categories** (Ping, CPU,
+  Memory, Disk, Network, Temperature, Uptime) with friendly labels, and the default view shows
+  only those — grouped by category — so you see the sensors that matter and only when the host
+  actually reports them.
+- A **Key sensors / All sensors** toggle per host; "All sensors" still shows the complete raw
+  list (via `GET /api/hosts/{id}/items?all=1`).
+
+### Notes
+- Classification is key-pattern based (`internal/server/curate.go`), covering the common
+  Zabbix agent2 Linux + ICMP keys; multi-instance sensors (per-mount disk, per-interface
+  network) stay distinct. Unrecognized items fall under "All sensors" and the mapping is easy
+  to extend as new device classes come online.
+
+---
+
 ## [0.0.11] - 2026-08-11
 
 **Per-sensor graphs.** Click a numeric sensor to chart its history.
