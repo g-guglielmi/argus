@@ -24,6 +24,11 @@ argus/
 - `GET /*` — the React SPA
 
 ## Build & deploy (via GitHub -> GHCR -> docker run)
+
+> **Prerequisite:** Docker Engine must be installed on the core VM. The Zabbix `setup-core.sh`
+> installs only the Zabbix stack (Zabbix + PostgreSQL/TimescaleDB + nginx), **not** Docker —
+> install it separately (`apt-get install docker.io`, or Docker CE from the official repo).
+
 1. Push this repo to GitHub. The `build` workflow builds the image and pushes it to
    `ghcr.io/<your-account>/argus` (`:latest` on the default branch, `:vX.Y.Z` on tags).
 2. The package starts **private**. Either make it public (GitHub → Packages → argus →
