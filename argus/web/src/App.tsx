@@ -78,6 +78,18 @@ function Login({ onSuccess }: { onSuccess: (m: Me) => void }) {
           <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Two-factor authentication</h2>
           <p style={{ color: '#aaa', marginTop: 0 }}>Enter the 6-digit code from your authenticator, or a recovery code.</p>
           <form onSubmit={submitCode}>
+            {/* Hidden username so password managers (Bitwarden) treat this as a login
+                form and offer to autofill the one-time-code field. */}
+            <input
+              type="text"
+              name="username"
+              autoComplete="username"
+              value={email}
+              readOnly
+              tabIndex={-1}
+              aria-hidden="true"
+              style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+            />
             <input
               style={{ ...input, width: '100%', marginBottom: '1rem', letterSpacing: '0.15em' }}
               value={code}
@@ -85,6 +97,7 @@ function Login({ onSuccess }: { onSuccess: (m: Me) => void }) {
               autoComplete="one-time-code"
               inputMode="numeric"
               name="otp"
+              id="otp"
               placeholder="123456"
               autoFocus
               required
@@ -403,7 +416,24 @@ function MfaCard() {
 
 function RecoveryCodes({ codes }: { codes: string[] }) {
   const text = codes.join('\n')
-  function copy() { navigator.clipboard?.writeText(text).catch(() => {}) }
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      // navigator.clipboard only exists in a secure context (HTTPS/localhost); fall
+      // back to execCommand so Copy still works over plain HTTP on a private IP.
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'; ta.style.opacity = '0'
+        document.body.appendChild(ta); ta.focus(); ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      }
+      setCopied(true); setTimeout(() => setCopied(false), 2000)
+    } catch { /* ignore */ }
+  }
   function download() {
     const blob = new Blob([text + '\n'], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
@@ -418,7 +448,7 @@ function RecoveryCodes({ codes }: { codes: string[] }) {
         {codes.map((c) => <span key={c}>{c}</span>)}
       </div>
       <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
-        <button onClick={copy} style={ghost}>Copy</button>
+        <button onClick={copy} style={ghost}>{copied ? 'Copied!' : 'Copy'}</button>
         <button onClick={download} style={ghost}>Download</button>
       </div>
     </div>

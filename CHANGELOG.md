@@ -11,6 +11,23 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.5] - 2026-08-11
+
+**MFA usability fixes** from first-run validation.
+
+### Fixed
+- **Copy recovery codes** now works over plain HTTP on a private IP. `navigator.clipboard`
+  only exists in a secure context, so the button silently did nothing when Argus was reached
+  by IP over HTTP; it now falls back to a `textarea` + `execCommand('copy')` and shows a
+  brief "Copied!" confirmation.
+
+### Changed
+- The two-factor login step now includes a visually-hidden `autocomplete="username"` field
+  (the account email) so password managers such as **Bitwarden** recognize it as a login form
+  and offer to autofill the one-time code; the code input also carries a stable `id`.
+
+---
+
 ## [0.0.4] - 2026-08-11
 
 **Two-factor authentication (TOTP).** Optional, self-service, and standards-based so it
