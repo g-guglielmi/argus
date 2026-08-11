@@ -178,6 +178,62 @@ type ProblemTrigger struct {
 	} `json:"items"`
 }
 
+// Item returns one item's metadata (used before fetching its history/trends).
+func (c *Client) Item(ctx context.Context, itemID string) (*Item, error) {
+	params := map[string]any{
+		"output":  []string{"itemid", "hostid", "name", "key_", "units", "value_type"},
+		"itemids": itemID,
+	}
+	var items []Item
+	if err := c.call(ctx, "item.get", params, true, &items); err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("item %s not found", itemID)
+	}
+	return &items[0], nil
+}
+
+type HistoryPoint struct {
+	Clock string `json:"clock"`
+	Value string `json:"value"`
+}
+
+// History returns raw stored values for an item within [from, to] (unix seconds).
+// valueType must match the item's value_type (0 float, 3 unsigned) or Zabbix returns nothing.
+func (c *Client) History(ctx context.Context, itemID string, valueType int, from, to int64) ([]HistoryPoint, error) {
+	params := map[string]any{
+		"output":    "extend",
+		"itemids":   itemID,
+		"history":   valueType,
+		"time_from": from,
+		"time_till": to,
+		"sortfield": "clock",
+		"sortorder": "ASC",
+	}
+	var pts []HistoryPoint
+	return pts, c.call(ctx, "history.get", params, true, &pts)
+}
+
+type TrendPoint struct {
+	Clock    string `json:"clock"`
+	ValueMin string `json:"value_min"`
+	ValueAvg string `json:"value_avg"`
+	ValueMax string `json:"value_max"`
+}
+
+// Trends returns hourly min/avg/max aggregates for an item within [from, to] (unix seconds).
+func (c *Client) Trends(ctx context.Context, itemID string, from, to int64) ([]TrendPoint, error) {
+	params := map[string]any{
+		"output":    "extend",
+		"itemids":   itemID,
+		"time_from": from,
+		"time_till": to,
+	}
+	var pts []TrendPoint
+	return pts, c.call(ctx, "trend.get", params, true, &pts)
+}
+
 // HostProblems returns the active problem triggers on one host, worst first, each with the
 // item(s) it references so the UI can point at the offending sensor.
 func (c *Client) HostProblems(ctx context.Context, hostID string) ([]ProblemTrigger, error) {

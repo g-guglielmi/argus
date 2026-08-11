@@ -11,6 +11,27 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.11] - 2026-08-11
+
+**Per-sensor graphs.** Click a numeric sensor to chart its history.
+
+### Added
+- Numeric sensor rows are now **clickable** and expand into a time-series chart (uPlot) with
+  **2h / 2d / 1M / 3M / 6M / 1Y** range tabs and drag-to-zoom.
+- Short ranges (2h/2d) read raw **history**; long ranges read **trends** and draw the avg line
+  with a shaded min/max band — matching Zabbix's 30-day history / 730-day trend retention.
+- Endpoint `GET /api/items/{id}/history?range=…` (history.get / trend.get). Non-numeric
+  sensors aren't clickable and the endpoint rejects them.
+
+### Notes
+- New frontend dependency: `uplot` (tiny, dependency-free charting).
+
+### Not yet (upcoming slices)
+- Curated per-device-class sensor views (hide the raw template noise), self-service email
+  reset, login rate-limiting, and the probe enrollment/PKI backend.
+
+---
+
 ## [0.0.10] - 2026-08-11
 
 **Show what's actually wrong.** A host's problem count now has detail behind it.

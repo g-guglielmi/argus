@@ -1,4 +1,6 @@
-import { useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, Fragment, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import uPlot from 'uplot'
+import 'uplot/dist/uPlot.min.css'
 import { registerPasskey, loginWithPasskey } from './webauthn'
 
 type Me = { email: string; name: string; surname: string; role: string; mfa_enabled?: boolean }
@@ -6,8 +8,12 @@ type User = { id: number; email: string; name: string; surname: string; role: st
 type Health = { status: string; zabbix: { reachable: boolean; version?: string; error?: string } }
 type Passkey = { id: string; name: string; created: string; last_used: string | null }
 type Host = { id: string; name: string; enabled: boolean; problems: number; severity: number; state: string }
-type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean }
+type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean; numeric: boolean }
 type Problem = { name: string; severity: number; state: string; item_ids: string[] }
+type SeriesPoint = { t: number; v?: number; min?: number; avg?: number; max?: number }
+type Series = { name: string; units: string; kind: 'history' | 'trend'; points: SeriesPoint[] }
+
+const RANGES = ['2h', '2d', '1M', '3M', '6M', '1Y']
 
 const stateColor: Record<string, string> = { ok: 'seagreen', warning: '#d9a441', error: 'crimson' }
 const stateRank: Record<string, number> = { ok: 0, warning: 1, error: 2 }
@@ -276,6 +282,7 @@ function HostItems({ hostId }: { hostId: string }) {
   const [items, setItems] = useState<SensorItem[] | null>(null)
   const [problems, setProblems] = useState<Problem[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [openItem, setOpenItem] = useState<string | null>(null)
 
   useEffect(() => {
     setItems(null); setProblems([]); setError(null)
@@ -331,26 +338,129 @@ function HostItems({ hostId }: { hostId: string }) {
               <tbody>
                 {items.map((it) => {
                   const st = itemState[it.id]
+                  const open = openItem === it.id
+                  const clickable = it.numeric && it.supported
                   return (
-                    <tr key={it.id} style={{
-                      borderTop: '1px solid #262626',
-                      opacity: it.supported ? 1 : 0.55,
-                      background: st ? (st === 'error' ? 'rgba(180,40,40,0.16)' : 'rgba(217,164,65,0.14)') : undefined,
-                    }}>
-                      <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word', borderLeft: `3px solid ${st ? stateColor[st] : 'transparent'}` }}>{it.name}</td>
-                      <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
-                        {it.supported
-                          ? <span><strong>{fmtValue(it.last_value) || '—'}</strong>{it.units ? ` ${it.units}` : ''}</span>
-                          : <span style={{ color: '#c66' }}>not supported</span>}
-                      </td>
-                      <td style={{ padding: '0.4rem 0.6rem', color: '#999', whiteSpace: 'nowrap' }}>{relTime(it.last_clock)}</td>
-                    </tr>
+                    <Fragment key={it.id}>
+                      <tr
+                        onClick={clickable ? () => setOpenItem(open ? null : it.id) : undefined}
+                        style={{
+                          borderTop: '1px solid #262626',
+                          opacity: it.supported ? 1 : 0.55,
+                          cursor: clickable ? 'pointer' : 'default',
+                          background: open ? 'rgba(47,111,79,0.14)' : (st ? (st === 'error' ? 'rgba(180,40,40,0.16)' : 'rgba(217,164,65,0.14)') : undefined),
+                        }}
+                      >
+                        <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word', borderLeft: `3px solid ${st ? stateColor[st] : 'transparent'}` }}>
+                          {clickable && <span style={{ color: '#6a6', marginRight: '0.4rem', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>}
+                          {it.name}
+                        </td>
+                        <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
+                          {it.supported
+                            ? <span><strong>{fmtValue(it.last_value) || '—'}</strong>{it.units ? ` ${it.units}` : ''}</span>
+                            : <span style={{ color: '#c66' }}>not supported</span>}
+                        </td>
+                        <td style={{ padding: '0.4rem 0.6rem', color: '#999', whiteSpace: 'nowrap' }}>{relTime(it.last_clock)}</td>
+                      </tr>
+                      {open && clickable && (
+                        <tr>
+                          <td colSpan={3} style={{ padding: '0.4rem 0.6rem 0.8rem', background: '#141414', borderTop: '1px solid #262626' }}>
+                            <SensorChart itemId={it.id} units={it.units} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   )
                 })}
               </tbody>
             </table>
           </div>
         )}
+    </div>
+  )
+}
+
+const GREEN = '#4fa06f'
+
+function buildPlot(data: Series, units: string, width: number): [uPlot.Options, uPlot.AlignedData] {
+  const xs = data.points.map((p) => p.t)
+  const axisStroke = '#8a8a8a'
+  const grid = { stroke: 'rgba(255,255,255,0.06)', width: 1 }
+  const ticks = { stroke: 'rgba(255,255,255,0.06)', width: 1 }
+  const yAxis: uPlot.Axis = { stroke: axisStroke, grid, ticks, size: 60 }
+  const xAxis: uPlot.Axis = { stroke: axisStroke, grid, ticks }
+  const base: Partial<uPlot.Options> = { width, height: 260, scales: { x: { time: true } }, axes: [xAxis, yAxis], legend: { show: true } }
+
+  if (data.kind === 'trend') {
+    const avg = data.points.map((p) => (p.avg ?? null))
+    const min = data.points.map((p) => (p.min ?? null))
+    const max = data.points.map((p) => (p.max ?? null))
+    const opts: uPlot.Options = {
+      ...base,
+      series: [
+        {},
+        { label: `avg${units ? ' (' + units + ')' : ''}`, stroke: GREEN, width: 1.5 },
+        { label: 'min', stroke: 'rgba(79,160,111,0.4)', width: 1 },
+        { label: 'max', stroke: 'rgba(79,160,111,0.4)', width: 1 },
+      ],
+      bands: [{ series: [3, 2], fill: 'rgba(79,160,111,0.12)' }],
+    } as uPlot.Options
+    return [opts, [xs, avg, min, max] as uPlot.AlignedData]
+  }
+
+  const vs = data.points.map((p) => (p.v ?? null))
+  const opts: uPlot.Options = {
+    ...base,
+    series: [{}, { label: `value${units ? ' (' + units + ')' : ''}`, stroke: GREEN, width: 1.5, fill: 'rgba(79,160,111,0.10)' }],
+  } as uPlot.Options
+  return [opts, [xs, vs] as uPlot.AlignedData]
+}
+
+function SensorChart({ itemId, units }: { itemId: string; units: string }) {
+  const [range, setRange] = useState('2h')
+  const [data, setData] = useState<Series | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const host = useRef<HTMLDivElement>(null)
+  const plot = useRef<uPlot | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true); setError(null)
+    fetch(`/api/items/${itemId}/history?range=${range}`)
+      .then(async (r) => { if (!r.ok) throw new Error(await errText(r, 'Failed to load history')); return r.json() })
+      .then((d: Series) => { if (!cancelled) setData(d) })
+      .catch((e) => { if (!cancelled) { setError(e.message || 'Failed to load history'); setData(null) } })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [itemId, range])
+
+  useEffect(() => {
+    if (plot.current) { plot.current.destroy(); plot.current = null }
+    if (!host.current || !data || data.points.length === 0) return
+    const width = host.current.clientWidth || 600
+    const [opts, aligned] = buildPlot(data, units, width)
+    plot.current = new uPlot(opts, aligned, host.current)
+    return () => { if (plot.current) { plot.current.destroy(); plot.current = null } }
+  }, [data, units])
+
+  useEffect(() => {
+    function onResize() { if (plot.current && host.current) plot.current.setSize({ width: host.current.clientWidth, height: 260 }) }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+        {RANGES.map((rk) => (
+          <button key={rk} onClick={() => setRange(rk)} style={{ ...ghost, padding: '0.2rem 0.55rem', fontSize: '0.85rem', borderColor: range === rk ? '#2f6f4f' : '#333' }}>{rk}</button>
+        ))}
+      </div>
+      {loading && <p style={{ color: '#888', margin: '0.3rem 0' }}>Loading…</p>}
+      {error && <p style={{ color: 'crimson', margin: '0.3rem 0' }}>{error}</p>}
+      {!loading && !error && data && data.points.length === 0 && <p style={{ color: '#888', margin: '0.3rem 0' }}>No data in this range.</p>}
+      <div ref={host} style={{ width: '100%' }} />
     </div>
   )
 }
