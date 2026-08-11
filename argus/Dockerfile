@@ -9,8 +9,10 @@ COPY web/ ./
 RUN npm run build          # outputs to /web/dist
 
 # ---- Stage 2: build the Go binary (embeds the frontend) ----
-FROM golang:1.24-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
+# allow go to fetch a newer toolchain if a dependency requires one (default images pin 'local')
+ENV GOTOOLCHAIN=auto
 COPY go.mod ./
 COPY . .
 # bring in the freshly built assets so go:embed bakes them in

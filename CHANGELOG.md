@@ -4,15 +4,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and the project
 follows [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`).
 
-**Versioning policy while pre-1.0:**
-- **PATCH** (`0.0.x`) — fixes, docs, and the pre-feature skeleton.
-- **MINOR** (`0.x.0`) — a completed feature slice / milestone (e.g. authentication, dashboards).
-- Every release is a git tag `vX.Y.Z`, which triggers CI to build the versioned image and
-  publish a GitHub Release using the matching section below.
+**Versioning policy:** increment the PATCH (`0.0.x`) for each change during development —
+`0.0.1`, `0.0.2`, `0.0.3`, … — reserving **`1.0.0`** for the first production-ready release.
+Each release is a git tag `vX.Y.Z` that triggers CI to build the versioned image and publish a
+GitHub Release from the matching section below.
 
 ---
 
-## [0.1.0] - 2026-08-11
+## [0.0.2] - 2026-08-11
 
 **Authentication.** Adds persistent users, password login with sessions, and the role model —
 the first real feature on top of the skeleton.
