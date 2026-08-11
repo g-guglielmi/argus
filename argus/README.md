@@ -42,7 +42,7 @@ docker run -d \
   --restart unless-stopped \
   -p 8081:8080 \
   -e ARGUS_ZABBIX_API_URL=http://10.0.0.10:8080/api_jsonrpc.php \
-  -v /mnt/data/argus:/data \
+  -v /docker/argus:/data \
   ghcr.io/<your-account>/argus:latest
 ```
 
