@@ -37,7 +37,7 @@ export default function App() {
 
 function Frame({ children }: { children: ReactNode }) {
   return (
-    <main style={{ maxWidth: 820, margin: '3rem auto', padding: '0 1rem' }}>
+    <main style={{ maxWidth: 1200, margin: '2.5rem auto', padding: '0 1.25rem' }}>
       <h1 style={{ marginBottom: 0 }}>Argus</h1>
       <p style={{ color: '#888', marginTop: 4 }}>Monitoring cockpit</p>
       {children}

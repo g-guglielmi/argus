@@ -11,6 +11,15 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.7] - 2026-08-11
+
+### Changed
+- Widened the app's content area (max width 820 → 1200px) so the Dashboard and the Users
+  table use more of the screen on desktop/wide displays. Individual forms keep their own
+  narrower max-widths for readability, and the layout still scales down on phones/tablets.
+
+---
+
 ## [0.0.6] - 2026-08-11
 
 **WebAuthn passkeys.** Passwordless, phishing-resistant sign-in that completes the
