@@ -19,6 +19,19 @@ function relTime(unix: number): string {
   return `${Math.floor(s / 86400)}d ago`
 }
 
+// fmtValue rounds numeric readings (2 decimals for |v|>=1, 4 for small values so sub-second
+// timings don't collapse to 0), strips trailing zeros, and leaves non-numeric values (text,
+// checksums) untouched.
+function fmtValue(raw: string): string {
+  const t = (raw ?? '').trim()
+  if (t === '') return ''
+  const n = Number(t)
+  if (!isFinite(n)) return raw
+  if (Number.isInteger(n)) return String(n)
+  const decimals = Math.abs(n) >= 1 ? 2 : 4
+  return String(parseFloat(n.toFixed(decimals)))
+}
+
 const ROLES = ['admin', 'helpdesk', 'viewer']
 
 const card: CSSProperties = { border: '1px solid #333', borderRadius: 8, padding: '1rem 1.25rem', background: '#1b1b1b' }
@@ -273,25 +286,30 @@ function HostItems({ hostId }: { hostId: string }) {
   if (items.length === 0) return <p style={{ color: '#888', margin: '0.4rem 0 0.8rem' }}>No sensors.</p>
 
   return (
-    <div style={{ overflowX: 'auto', margin: '0.3rem 0 0.8rem', border: '1px solid #262626', borderRadius: 6 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+    <div style={{ margin: '0.3rem 0 0.8rem', border: '1px solid #262626', borderRadius: 6, overflow: 'hidden' }}>
+      <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+        <colgroup>
+          <col style={{ width: '32%' }} />
+          <col />
+          <col style={{ width: '110px' }} />
+        </colgroup>
         <thead>
           <tr style={{ textAlign: 'left', color: '#aaa' }}>
             <th style={{ padding: '0.4rem 0.6rem' }}>Sensor</th>
             <th style={{ padding: '0.4rem 0.6rem' }}>Value</th>
-            <th style={{ padding: '0.4rem 0.6rem' }}>Last check</th>
+            <th style={{ padding: '0.4rem 0.6rem', whiteSpace: 'nowrap' }}>Last check</th>
           </tr>
         </thead>
         <tbody>
           {items.map((it) => (
             <tr key={it.id} style={{ borderTop: '1px solid #262626', opacity: it.supported ? 1 : 0.55 }}>
-              <td style={{ padding: '0.4rem 0.6rem' }}>{it.name}</td>
-              <td style={{ padding: '0.4rem 0.6rem' }}>
+              <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>{it.name}</td>
+              <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
                 {it.supported
-                  ? <span><strong>{it.last_value || '—'}</strong>{it.units ? ` ${it.units}` : ''}</span>
+                  ? <span><strong>{fmtValue(it.last_value) || '—'}</strong>{it.units ? ` ${it.units}` : ''}</span>
                   : <span style={{ color: '#c66' }}>not supported</span>}
               </td>
-              <td style={{ padding: '0.4rem 0.6rem', color: '#999' }}>{relTime(it.last_clock)}</td>
+              <td style={{ padding: '0.4rem 0.6rem', color: '#999', whiteSpace: 'nowrap' }}>{relTime(it.last_clock)}</td>
             </tr>
           ))}
         </tbody>

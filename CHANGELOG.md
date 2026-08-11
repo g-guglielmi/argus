@@ -11,6 +11,18 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.9] - 2026-08-11
+
+### Fixed
+- **Sensor values are now rounded** (2 decimals for values ≥ 1, 4 for sub-1 so small timings
+  don't collapse to zero), with trailing zeros stripped. Text values and checksums are left
+  as-is. No more 16-digit readings.
+- **Sensor table alignment**: switched to a fixed table layout so long values (e.g. a 64-char
+  checksum) wrap within the Value column instead of overflowing and pushing the right border
+  out of alignment. "Last check" no longer wraps.
+
+---
+
 ## [0.0.8] - 2026-08-11
 
 **Read path — hosts & sensors.** The first monitoring-facing feature: Argus now reads live
