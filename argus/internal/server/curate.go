@@ -43,6 +43,21 @@ func param(params []string, i int) string {
 	return ""
 }
 
+// trafficLabel builds a network-traffic label, distinguishing the byte-rate item from the
+// per-interface error/dropped/packet counters that share the net.if.in/out key. Params are
+// [interface, mode]; mode "" or "bytes" is the main rate.
+func trafficLabel(base string, p []string) string {
+	iface, mode := param(p, 0), param(p, 1)
+	label := base
+	if mode != "" && mode != "bytes" {
+		label += " " + mode
+	}
+	if iface != "" {
+		label += " (" + iface + ")"
+	}
+	return label
+}
+
 // classifyItem returns (category, label, matched) for a Zabbix item key/name.
 func classifyItem(key, name string) (string, string, bool) {
 	base, p := splitKey(key)
@@ -100,15 +115,9 @@ func classifyItem(key, name string) (string, string, bool) {
 		}
 
 	case "net.if.in", "net.if.dependent.in":
-		if i := param(p, 0); i != "" {
-			return "Network", "Traffic in (" + i + ")", true
-		}
-		return "Network", "Traffic in", true
+		return "Network", trafficLabel("Traffic in", p), true
 	case "net.if.out", "net.if.dependent.out":
-		if i := param(p, 0); i != "" {
-			return "Network", "Traffic out (" + i + ")", true
-		}
-		return "Network", "Traffic out", true
+		return "Network", trafficLabel("Traffic out", p), true
 
 	case "system.uptime":
 		return "Uptime", "Uptime", true

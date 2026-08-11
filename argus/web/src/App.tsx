@@ -35,18 +35,42 @@ function roundNum(n: number): string {
   return String(parseFloat(n.toFixed(decimals)))
 }
 
-// scaleBytes turns a byte count into a human-readable [value, unit] (1024-based).
-function scaleBytes(n: number, suffix: string): [string, string] {
-  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+const BIT_UNITS = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps']
+
+// scaleBy reduces n by `base` until it fits a unit, returning [value, unit].
+function scaleBy(n: number, base: number, units: string[]): [string, string] {
   let v = n, i = 0
-  while (Math.abs(v) >= 1024 && i < u.length - 1) { v /= 1024; i++ }
-  return [i === 0 ? String(Math.round(v)) : String(parseFloat(v.toFixed(2))), u[i] + suffix]
+  while (Math.abs(v) >= base && i < units.length - 1) { v /= base; i++ }
+  return [i === 0 ? String(Math.round(v)) : String(parseFloat(v.toFixed(2))), units[i]]
 }
 
-// fmtNumParts formats a numeric reading into [value, unit], scaling byte units.
+// fmtDuration renders a number of seconds as e.g. "1d 4h 14m".
+function fmtDuration(sec: number): string {
+  sec = Math.max(0, Math.floor(sec))
+  const d = Math.floor(sec / 86400); sec %= 86400
+  const h = Math.floor(sec / 3600); sec %= 3600
+  const m = Math.floor(sec / 60)
+  const parts: string[] = []
+  if (d) parts.push(`${d}d`)
+  if (h) parts.push(`${h}h`)
+  if (m || parts.length === 0) parts.push(`${m}m`)
+  return parts.join(' ')
+}
+
+// scaledUnit reports whether a unit gets special scaling/formatting (so the chart axis and
+// legend format it, and the "(unit)" suffix is dropped since the value already carries it).
+function scaledUnit(units: string): boolean {
+  return units === 'B' || units === 'Bps' || units === 'bps' || units === 'uptime'
+}
+
+// fmtNumParts formats a numeric reading into [value, unit], scaling byte/bit units and
+// rendering uptime as a duration.
 function fmtNumParts(n: number, units: string): [string, string] {
-  if (units === 'B') return scaleBytes(n, '')
-  if (units === 'Bps') return scaleBytes(n, 'ps')
+  if (units === 'B') return scaleBy(n, 1024, BYTE_UNITS)
+  if (units === 'Bps') { const [v, u] = scaleBy(n, 1024, BYTE_UNITS); return [v, u + 'ps'] }
+  if (units === 'bps') return scaleBy(n, 1000, BIT_UNITS)
+  if (units === 'uptime') return [fmtDuration(n), '']
   return [roundNum(n), units || '']
 }
 
@@ -434,15 +458,15 @@ function buildPlot(data: Series, units: string, width: number): [uPlot.Options, 
   const axisStroke = '#8a8a8a'
   const grid = { stroke: 'rgba(255,255,255,0.06)', width: 1 }
   const ticks = { stroke: 'rgba(255,255,255,0.06)', width: 1 }
-  const isBytes = units === 'B' || units === 'Bps'
-  // Byte-scaled y-axis ticks; otherwise default numeric.
+  const scaled = scaledUnit(units)
+  // Scaled y-axis ticks (bytes/bits/uptime); otherwise default numeric.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const yValues = isBytes ? ((_u: any, splits: number[]) => splits.map((v) => fmtNum(v, units))) : undefined
+  const yValues = scaled ? ((_u: any, splits: number[]) => splits.map((v) => fmtNum(v, units))) : undefined
   const yAxis: uPlot.Axis = { stroke: axisStroke, grid, ticks, size: 64, values: yValues as unknown as uPlot.Axis['values'] }
   const xAxis: uPlot.Axis = { stroke: axisStroke, grid, ticks }
   // Legend cells: show the hovered point, or fall back to the latest value when idle (so the
-  // legend is never blank). unitLabel is omitted for bytes since the value already carries it.
-  const unitLabel = isBytes ? '' : units ? ` (${units})` : ''
+  // legend is never blank). unitLabel is dropped for scaled units since the value carries it.
+  const unitLabel = scaled ? '' : units ? ` (${units})` : ''
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const xVal = (u: any, v: number | null) => { const t = v ?? lastVal(u, 0); return t == null ? '--' : new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

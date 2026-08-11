@@ -11,6 +11,17 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.14] - 2026-08-12
+
+### Changed
+- **Network traffic scales** to Kbps/Mbps/Gbps (1000-based bits), and **uptime** renders as a
+  duration (e.g. `1d 4h 14m`) instead of raw seconds — in the table and on the graphs.
+- **Network sensors are de-duplicated**: the per-interface error/dropped/packet counters that
+  share the `net.if.in`/`net.if.out` key are now labeled distinctly (e.g. "Traffic in dropped
+  (enX0)"), so the byte-rate row is no longer repeated.
+
+---
+
 ## [0.0.13] - 2026-08-12
 
 ### Changed
