@@ -14,6 +14,8 @@ import (
 	"argus/internal/store"
 	"argus/internal/zabbix"
 	"argus/web"
+
+	"github.com/go-webauthn/webauthn/webauthn"
 )
 
 const (
@@ -26,19 +28,37 @@ type Server struct {
 	zbx       *zabbix.Client
 	st        *store.Store
 	logger    *slog.Logger
-	dummyHash string // for constant-ish login timing when a user doesn't exist
+	dummyHash string          // for constant-ish login timing when a user doesn't exist
+	wa        *webauthn.WebAuthn // nil when passkeys are not configured
 }
 
 func New(cfg config.Config, zbx *zabbix.Client, st *store.Store, logger *slog.Logger) http.Handler {
 	dummy, _ := auth.HashPassword("argus-nonexistent-user")
 	s := &Server{cfg: cfg, zbx: zbx, st: st, logger: logger, dummyHash: dummy}
 
+	if cfg.PasskeysEnabled() {
+		wa, err := webauthn.New(&webauthn.Config{
+			RPID:          cfg.RPID,
+			RPDisplayName: cfg.RPDisplayName,
+			RPOrigins:     cfg.RPOrigins,
+		})
+		if err != nil {
+			logger.Error("webauthn init failed; passkeys disabled", "err", err)
+		} else {
+			s.wa = wa
+			logger.Info("passkeys enabled", "rp_id", cfg.RPID, "origins", cfg.RPOrigins)
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /api/health", s.handleAPIHealth)
+	mux.HandleFunc("GET /api/features", s.handleFeatures)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("POST /api/login/totp", s.handleLoginTOTP)
+	mux.HandleFunc("POST /api/login/passkey/begin", s.handlePasskeyLoginBegin)
+	mux.HandleFunc("POST /api/login/passkey/finish", s.handlePasskeyLoginFinish)
 	mux.HandleFunc("GET /api/me", auth.RequireAuth(s.handleMe))
 	mux.HandleFunc("POST /api/me/password", auth.RequireAuth(s.handleChangeOwnPassword))
 
@@ -49,6 +69,12 @@ func New(cfg config.Config, zbx *zabbix.Client, st *store.Store, logger *slog.Lo
 	mux.HandleFunc("POST /api/me/mfa/disable", auth.RequireAuth(s.handleMFADisable))
 	mux.HandleFunc("POST /api/me/mfa/recovery-codes", auth.RequireAuth(s.handleMFARegenRecovery))
 
+	// self-service passkeys (any signed-in user)
+	mux.HandleFunc("GET /api/me/passkeys", auth.RequireAuth(s.handleListPasskeys))
+	mux.HandleFunc("POST /api/me/passkeys/register/begin", auth.RequireAuth(s.handlePasskeyRegisterBegin))
+	mux.HandleFunc("POST /api/me/passkeys/register/finish", auth.RequireAuth(s.handlePasskeyRegisterFinish))
+	mux.HandleFunc("DELETE /api/me/passkeys/{id}", auth.RequireAuth(s.handleDeletePasskey))
+
 	// user management (admin only)
 	mux.HandleFunc("GET /api/users", auth.RequireRole("admin", s.handleListUsers))
 	mux.HandleFunc("POST /api/users", auth.RequireRole("admin", s.handleCreateUser))
@@ -56,6 +82,7 @@ func New(cfg config.Config, zbx *zabbix.Client, st *store.Store, logger *slog.Lo
 	mux.HandleFunc("DELETE /api/users/{id}", auth.RequireRole("admin", s.handleDeleteUser))
 	mux.HandleFunc("POST /api/users/{id}/password", auth.RequireRole("admin", s.handleResetPassword))
 	mux.HandleFunc("POST /api/users/{id}/mfa/reset", auth.RequireRole("admin", s.handleAdminResetMFA))
+	mux.HandleFunc("POST /api/users/{id}/passkeys/reset", auth.RequireRole("admin", s.handleAdminResetPasskeys))
 
 	mux.Handle("/", spaHandler())
 
@@ -92,6 +119,11 @@ func (s *Server) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		resp.Zabbix = zabbixHealth{Reachable: true, Version: ver}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleFeatures advertises optional capabilities so the UI can adapt (public).
+func (s *Server) handleFeatures(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"passkeys": s.wa != nil})
 }
 
 // --- auth ---

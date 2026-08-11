@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -90,15 +91,38 @@ CREATE TABLE IF NOT EXISTS mfa_challenges (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
+
+-- Registered WebAuthn credentials (passkeys). credential is the JSON-serialized
+-- webauthn.Credential; the raw credential ID is the primary key.
+CREATE TABLE IF NOT EXISTS passkeys (
+  id           BLOB PRIMARY KEY,
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL DEFAULT '',
+  credential   TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys(user_id);
+
+-- Short-lived WebAuthn ceremony state (registration + discoverable login challenges).
+CREATE TABLE IF NOT EXISTS webauthn_sessions (
+  id         TEXT PRIMARY KEY,
+  user_id    INTEGER,
+  data       TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
 `); err != nil {
 		return err
 	}
 
-	// Additive column migrations for databases created before MFA existed.
+	// Additive column migrations for databases created before these features existed.
 	if err := s.ensureColumn("users", "totp_secret TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.ensureColumn("users", "totp_enabled INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("users", "webauthn_handle BLOB"); err != nil {
 		return err
 	}
 	return nil
@@ -299,6 +323,162 @@ func (s *Store) MFAChallengeUserID(ctx context.Context, id string) (int64, error
 
 func (s *Store) DeleteMFAChallenge(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM mfa_challenges WHERE id=?`, id)
+	return err
+}
+
+// --- passkeys / WebAuthn ---
+
+// Passkey is the display-facing metadata for a registered credential.
+type Passkey struct {
+	ID         []byte
+	Name       string
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+}
+
+// EnsureWebAuthnHandle returns the user's stable WebAuthn user handle, generating and
+// persisting a random one on first use.
+func (s *Store) EnsureWebAuthnHandle(ctx context.Context, userID int64) ([]byte, error) {
+	var h []byte
+	err := s.db.QueryRowContext(ctx, `SELECT webauthn_handle FROM users WHERE id=?`, userID).Scan(&h)
+	if err != nil {
+		return nil, err
+	}
+	if len(h) > 0 {
+		return h, nil
+	}
+	h = make([]byte, 16)
+	if _, err := rand.Read(h); err != nil {
+		return nil, err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE users SET webauthn_handle=? WHERE id=?`, h, userID); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+// UserByWebAuthnHandle finds a user by their WebAuthn handle (used for discoverable login).
+func (s *Store) UserByWebAuthnHandle(ctx context.Context, handle []byte) (*User, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE webauthn_handle=?`, handle).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.UserByID(ctx, id)
+}
+
+// AddPasskey stores a newly registered credential (credential is JSON).
+func (s *Store) AddPasskey(ctx context.Context, id []byte, userID int64, name, credential string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO passkeys(id,user_id,name,credential,created_at) VALUES(?,?,?,?,?)`,
+		id, userID, name, credential, time.Now().Unix())
+	return err
+}
+
+// PasskeyCredentials returns the raw JSON credential blobs for a user (for the WebAuthn lib).
+func (s *Store) PasskeyCredentials(ctx context.Context, userID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT credential FROM passkeys WHERE user_id=?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ListPasskeys returns display metadata for a user's passkeys, newest first.
+func (s *Store) ListPasskeys(ctx context.Context, userID int64) ([]Passkey, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,name,created_at,last_used_at FROM passkeys WHERE user_id=? ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Passkey
+	for rows.Next() {
+		var p Passkey
+		var created int64
+		var last sql.NullInt64
+		if err := rows.Scan(&p.ID, &p.Name, &created, &last); err != nil {
+			return nil, err
+		}
+		p.CreatedAt = time.Unix(created, 0)
+		if last.Valid {
+			t := time.Unix(last.Int64, 0)
+			p.LastUsedAt = &t
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// UpdatePasskeyCredential rewrites a credential blob (e.g. after a sign-count bump) and marks it used.
+func (s *Store) UpdatePasskeyCredential(ctx context.Context, id []byte, credential string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE passkeys SET credential=?, last_used_at=? WHERE id=?`, credential, time.Now().Unix(), id)
+	return err
+}
+
+// DeletePasskey removes one credential owned by the user.
+func (s *Store) DeletePasskey(ctx context.Context, id []byte, userID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM passkeys WHERE id=? AND user_id=?`, id, userID)
+	return err
+}
+
+// DeleteAllPasskeys removes every credential for a user (admin reset).
+func (s *Store) DeleteAllPasskeys(ctx context.Context, userID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM passkeys WHERE user_id=?`, userID)
+	return err
+}
+
+// CountPasskeys reports how many passkeys a user has registered.
+func (s *Store) CountPasskeys(ctx context.Context, userID int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM passkeys WHERE user_id=?`, userID).Scan(&n)
+	return n, err
+}
+
+func (s *Store) SaveWebAuthnSession(ctx context.Context, id string, userID *int64, data string, expires time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO webauthn_sessions(id,user_id,data,expires_at) VALUES(?,?,?,?)`,
+		id, userID, data, expires.Unix())
+	return err
+}
+
+// WebAuthnSession returns the stored ceremony data for a valid, unexpired id, deleting it if expired.
+func (s *Store) WebAuthnSession(ctx context.Context, id string) (userID *int64, data string, err error) {
+	var uid sql.NullInt64
+	var expires int64
+	err = s.db.QueryRowContext(ctx,
+		`SELECT user_id,data,expires_at FROM webauthn_sessions WHERE id=?`, id).Scan(&uid, &data, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", ErrNotFound
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if time.Now().Unix() > expires {
+		_ = s.DeleteWebAuthnSession(ctx, id)
+		return nil, "", ErrNotFound
+	}
+	if uid.Valid {
+		userID = &uid.Int64
+	}
+	return userID, data, nil
+}
+
+func (s *Store) DeleteWebAuthnSession(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM webauthn_sessions WHERE id=?`, id)
 	return err
 }
 

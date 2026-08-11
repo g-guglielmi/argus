@@ -1,8 +1,10 @@
 import { useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import { registerPasskey, loginWithPasskey } from './webauthn'
 
 type Me = { email: string; name: string; surname: string; role: string; mfa_enabled?: boolean }
-type User = { id: number; email: string; name: string; surname: string; role: string; mfa_enabled?: boolean }
+type User = { id: number; email: string; name: string; surname: string; role: string; mfa_enabled?: boolean; passkeys?: number }
 type Health = { status: string; zabbix: { reachable: boolean; version?: string; error?: string } }
+type Passkey = { id: string; name: string; created: string; last_used: string | null }
 
 const ROLES = ['admin', 'helpdesk', 'viewer']
 
@@ -19,14 +21,18 @@ async function errText(res: Response, fallback: string) {
 export default function App() {
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
+  const [passkeysAvailable, setPasskeysAvailable] = useState(false)
 
   useEffect(() => {
     fetch('/api/me').then((r) => (r.ok ? r.json() : null)).then(setMe).catch(() => setMe(null)).finally(() => setLoading(false))
+    // Passkeys require the server to be configured for WebAuthn AND a secure context
+    // (HTTPS or localhost) — over a private IP on plain HTTP they can't be used.
+    fetch('/api/features').then((r) => r.json()).then((f) => setPasskeysAvailable(!!f.passkeys && window.isSecureContext)).catch(() => {})
   }, [])
 
   if (loading) return <Frame><p>Loading…</p></Frame>
-  if (!me) return <Login onSuccess={setMe} />
-  return <AppShell me={me} onLogout={() => setMe(null)} />
+  if (!me) return <Login onSuccess={setMe} passkeysAvailable={passkeysAvailable} />
+  return <AppShell me={me} onLogout={() => setMe(null)} passkeysAvailable={passkeysAvailable} />
 }
 
 function Frame({ children }: { children: ReactNode }) {
@@ -39,11 +45,20 @@ function Frame({ children }: { children: ReactNode }) {
   )
 }
 
-function Login({ onSuccess }: { onSuccess: (m: Me) => void }) {
+function Login({ onSuccess, passkeysAvailable }: { onSuccess: (m: Me) => void; passkeysAvailable: boolean }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  async function passkeyLogin() {
+    setBusy(true); setError(null)
+    try {
+      onSuccess(await loginWithPasskey())
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : 'Passkey login failed')
+    } finally { setBusy(false) }
+  }
   // When the account has MFA, the password step returns a short-lived token and we
   // switch to the code step instead of signing straight in.
   const [mfaToken, setMfaToken] = useState<string | null>(null)
@@ -125,12 +140,18 @@ function Login({ onSuccess }: { onSuccess: (m: Me) => void }) {
           {error && <p style={{ color: 'crimson', margin: '0 0 0.75rem' }}>{error}</p>}
           <button type="submit" disabled={busy} style={{ ...btn, width: '100%' }}>{busy ? 'Signing in…' : 'Sign in'}</button>
         </form>
+        {passkeysAvailable && (
+          <>
+            <div style={{ textAlign: 'center', color: '#666', margin: '0.9rem 0 0.6rem', fontSize: '0.85rem' }}>or</div>
+            <button onClick={passkeyLogin} disabled={busy} style={{ ...ghost, width: '100%' }}>Sign in with a passkey</button>
+          </>
+        )}
       </section>
     </Frame>
   )
 }
 
-function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
+function AppShell({ me, onLogout, passkeysAvailable }: { me: Me; onLogout: () => void; passkeysAvailable: boolean }) {
   const [view, setView] = useState<'dashboard' | 'users' | 'account'>('dashboard')
   async function logout() { await fetch('/api/logout', { method: 'POST' }).catch(() => {}); onLogout() }
   const tab = (id: typeof view, label: string) => (
@@ -151,7 +172,7 @@ function AppShell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       </div>
       {view === 'dashboard' && <DashboardView />}
       {view === 'users' && me.role === 'admin' && <UsersView />}
-      {view === 'account' && <AccountView />}
+      {view === 'account' && <AccountView passkeysAvailable={passkeysAvailable} />}
     </Frame>
   )
 }
@@ -216,6 +237,13 @@ function UsersView() {
     if (!res.ok) return fail(res)
     setMsg(`Two-factor reset for ${u.email}`); load()
   }
+  async function resetPasskeys(u: User) {
+    setError(null); setMsg(null)
+    if (!window.confirm(`Remove all passkeys for ${u.email}?`)) return
+    const res = await fetch(`/api/users/${u.id}/passkeys/reset`, { method: 'POST' })
+    if (!res.ok) return fail(res)
+    setMsg(`Passkeys removed for ${u.email}`); load()
+  }
   async function del(u: User) {
     setError(null); setMsg(null)
     if (!window.confirm(`Delete ${u.email}?`)) return
@@ -238,6 +266,7 @@ function UsersView() {
               <th style={{ padding: '0.4rem 0.5rem' }}>Name</th>
               <th style={{ padding: '0.4rem 0.5rem' }}>Role</th>
               <th style={{ padding: '0.4rem 0.5rem' }}>2FA</th>
+              <th style={{ padding: '0.4rem 0.5rem' }}>Passkeys</th>
               <th style={{ padding: '0.4rem 0.5rem' }}>Actions</th>
             </tr>
           </thead>
@@ -256,9 +285,13 @@ function UsersView() {
                     ? <span style={{ color: 'seagreen', fontWeight: 600 }}>on</span>
                     : <span style={{ color: '#777' }}>off</span>}
                 </td>
+                <td style={{ padding: '0.4rem 0.5rem' }}>
+                  {u.passkeys ? <span style={{ color: 'seagreen', fontWeight: 600 }}>{u.passkeys}</span> : <span style={{ color: '#777' }}>0</span>}
+                </td>
                 <td style={{ padding: '0.4rem 0.5rem', display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                   <button onClick={() => resetPw(u)} style={ghost}>Reset password</button>
                   {u.mfa_enabled && <button onClick={() => resetMfa(u)} style={ghost}>Reset 2FA</button>}
+                  {!!u.passkeys && <button onClick={() => resetPasskeys(u)} style={ghost}>Reset passkeys</button>}
                   <button onClick={() => del(u)} style={{ ...ghost, borderColor: '#5a2a2a', color: '#e59' }}>Delete</button>
                 </td>
               </tr>
@@ -282,11 +315,12 @@ function UsersView() {
   )
 }
 
-function AccountView() {
+function AccountView({ passkeysAvailable }: { passkeysAvailable: boolean }) {
   return (
     <div style={{ display: 'grid', gap: '1.25rem' }}>
       <PasswordCard />
       <MfaCard />
+      {passkeysAvailable && <PasskeyCard />}
     </div>
   )
 }
@@ -452,5 +486,63 @@ function RecoveryCodes({ codes }: { codes: string[] }) {
         <button onClick={download} style={ghost}>Download</button>
       </div>
     </div>
+  )
+}
+
+function PasskeyCard() {
+  const [keys, setKeys] = useState<Passkey[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  function load() { fetch('/api/me/passkeys').then((r) => r.json()).then(setKeys).catch(() => setError('Failed to load passkeys')) }
+  useEffect(() => { load() }, [])
+
+  async function add() {
+    setError(null); setMsg(null)
+    const name = window.prompt('Name this passkey (e.g. "Bitwarden", "Phone", "YubiKey"):', 'Bitwarden')
+    if (name === null) return
+    setBusy(true)
+    try {
+      await registerPasskey(name || 'Passkey')
+      setMsg('Passkey added'); load()
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : 'Could not add passkey')
+    } finally { setBusy(false) }
+  }
+  async function remove(k: Passkey) {
+    setError(null); setMsg(null)
+    if (!window.confirm(`Remove passkey "${k.name}"?`)) return
+    const res = await fetch(`/api/me/passkeys/${k.id}`, { method: 'DELETE' })
+    if (!res.ok) { setError(await errText(res, 'Could not remove passkey')); return }
+    setMsg('Passkey removed'); load()
+  }
+
+  return (
+    <section style={{ ...card, maxWidth: 560 }}>
+      <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Passkeys</h2>
+      <p style={{ color: '#aaa', marginTop: 0 }}>Sign in without a password using a passkey stored in Bitwarden, your phone, or a security key. Passkeys work when you reach Argus through its HTTPS address.</p>
+      {error && <p style={{ color: 'crimson' }}>{error}</p>}
+      {msg && <p style={{ color: 'seagreen' }}>{msg}</p>}
+
+      {keys.length === 0 && <p style={{ color: '#888' }}>No passkeys registered yet.</p>}
+      {keys.length > 0 && (
+        <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 1rem' }}>
+          {keys.map((k) => (
+            <li key={k.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #2a2a2a', padding: '0.5rem 0' }}>
+              <span>
+                <strong>{k.name}</strong>
+                <span style={{ color: '#777', marginLeft: '0.5rem', fontSize: '0.85rem' }}>
+                  added {new Date(k.created).toLocaleDateString()}
+                  {k.last_used ? ` · last used ${new Date(k.last_used).toLocaleDateString()}` : ' · never used'}
+                </span>
+              </span>
+              <button onClick={() => remove(k)} style={{ ...ghost, borderColor: '#5a2a2a', color: '#e59' }}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button onClick={add} disabled={busy} style={btn}>{busy ? 'Waiting for authenticator…' : 'Add a passkey'}</button>
+    </section>
   )
 }

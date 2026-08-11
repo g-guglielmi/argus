@@ -11,6 +11,41 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.6] - 2026-08-11
+
+**WebAuthn passkeys.** Passwordless, phishing-resistant sign-in that completes the
+auth-hardening track. Uses discoverable (resident) credentials, so login needs no username —
+the authenticator lists available passkeys. Works with Bitwarden, platform authenticators
+(Windows Hello, Face ID/Touch ID), and hardware security keys.
+
+### Added
+- **Register passkeys** in Account: add multiple, name each, see when they were added and
+  last used, and remove them individually.
+- **Passwordless login**: a "Sign in with a passkey" button on the sign-in screen runs a
+  discoverable-credential ceremony and starts a session on success.
+- **Admin "Reset passkeys"** on the Users table (with a per-user passkey count) to recover a
+  locked-out account.
+- Endpoints: `GET /api/features`, `POST /api/login/passkey/{begin,finish}`,
+  `GET /api/me/passkeys`, `POST /api/me/passkeys/register/{begin,finish}`,
+  `DELETE /api/me/passkeys/{id}`, `POST /api/users/{id}/passkeys/reset`.
+- New config: `ARGUS_RP_ID`, `ARGUS_RP_DISPLAY_NAME`, `ARGUS_RP_ORIGINS`.
+
+### How it degrades
+- Passkeys are **feature-gated**: they appear only when the server is configured
+  (`ARGUS_RP_ID` + `ARGUS_RP_ORIGINS`) **and** the page is a secure context (HTTPS or
+  localhost). Reaching Argus by private IP over plain HTTP simply hides the passkey UI and
+  falls back to password + TOTP — WebAuthn RP IDs can't be a bare IP.
+
+### Changed
+- The admin user list now reports a passkey count per user.
+- Additive SQLite migration adds a `webauthn_handle` column and the `passkeys` and
+  `webauthn_sessions` tables (no manual steps).
+
+### Not yet (upcoming slices)
+- Self-service email password reset, login rate-limiting, and the probe enrollment/PKI backend.
+
+---
+
 ## [0.0.5] - 2026-08-11
 
 **MFA usability fixes** from first-run validation.

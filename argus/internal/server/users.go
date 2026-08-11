@@ -27,6 +27,7 @@ type adminUser struct {
 	Surname    string `json:"surname"`
 	Role       string `json:"role"`
 	MFAEnabled bool   `json:"mfa_enabled"`
+	Passkeys   int    `json:"passkeys"`
 }
 
 func toAdminUser(u store.User) adminUser {
@@ -58,7 +59,9 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]adminUser, 0, len(users))
 	for _, u := range users {
-		out = append(out, toAdminUser(u))
+		au := toAdminUser(u)
+		au.Passkeys, _ = s.st.CountPasskeys(r.Context(), u.ID)
+		out = append(out, au)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
