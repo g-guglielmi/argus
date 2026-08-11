@@ -56,6 +56,14 @@ if [[ -n "$TS_VERSION" ]]; then
   echo "    pinning TimescaleDB ${TS_VERSION} (Zabbix-supported)"
   apt-get install -y --allow-downgrades "${TS_META}=${TS_VERSION}" "${TS_LOADER}=${TS_VERSION}"
   apt-mark hold "$TS_META" "$TS_LOADER"
+  # Defense in depth: a hold only blocks `apt upgrade`; a priority-1001 pin makes apt
+  # (and any PackageKit-based update tool) refuse 2.29+ even on an explicit install.
+  cat > /etc/apt/preferences.d/timescaledb-pin.pref <<'PIN'
+Package: timescaledb-2-*
+Pin: version 2.28.*
+Pin-Priority: 1001
+PIN
+  echo "    wrote /etc/apt/preferences.d/timescaledb-pin.pref (locks TimescaleDB to 2.28.*)"
 else
   echo "    (!) no 2.28.x found; installing latest — Zabbix needs AllowUnsupportedDBVersions=1 and"
   echo "        will not manage compression until you downgrade to 2.28."

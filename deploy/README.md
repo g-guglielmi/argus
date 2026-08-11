@@ -115,10 +115,24 @@ this build the repo installed **2.29.1** while Zabbix **7.0.29** supports only u
 Zabbix gates on this: it won't manage native compression, and by default won't even start.
 
 **Prevention (fresh installs)**
-`setup-core.sh` now auto-selects the newest **2.28.x** TimescaleDB at install time and
-`apt-mark hold`s it, so new cores never hit this. `AllowUnsupportedDBVersions=1` remains in
+`setup-core.sh` now auto-selects the newest **2.28.x** TimescaleDB at install time, `apt-mark
+hold`s it, **and** writes a priority-1001 APT pin (`/etc/apt/preferences.d/timescaledb-pin.pref`,
+`Pin: version 2.28.*`), so new cores never hit this. `AllowUnsupportedDBVersions=1` remains in
 `zabbix_server.conf.snippet` as a safety net (lets the server *run* on an unsupported version,
 but Zabbix still won't manage compression until you're on 2.28).
+
+**Why the pin as well as the hold.** A `hold` only stops `apt upgrade` / `full-upgrade`; an
+explicit install or a GUI update manager (e.g. Linux Update Dashboard, PackageKit) can still
+pull 2.29. The priority-1001 pin removes 2.29 as a candidate entirely, so *nothing* upgrades
+past 2.28.* — even "Upgrade All". To add it to a box that predates this change:
+```bash
+sudo tee /etc/apt/preferences.d/timescaledb-pin.pref >/dev/null <<'PIN'
+Package: timescaledb-2-*
+Pin: version 2.28.*
+Pin-Priority: 1001
+PIN
+apt-cache policy timescaledb-2-postgresql-17   # Candidate: should read 2.28.x, not 2.29
+```
 
 **Fix on a live box (what was done here — safe because the DB was empty).**
 Downgrade TimescaleDB to the newest 2.28.x, pin it, then recreate the empty `zabbix` DB so the
