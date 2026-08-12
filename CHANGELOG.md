@@ -11,6 +11,14 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.24] - 2026-08-12
+
+### Changed
+- **Custom duration now uses a date/time picker** instead of a "how many hours" prompt. Pick a
+  calendar date and time and the state (ack/pause/hide) holds from now until that moment.
+
+---
+
 ## [0.0.23] - 2026-08-12
 
 **Durations, un-acknowledge, and faded acknowledged state.**

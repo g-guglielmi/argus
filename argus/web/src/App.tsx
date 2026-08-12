@@ -43,30 +43,50 @@ const DURATIONS: { label: string; seconds: number | null | 'custom' }[] = [
   { label: 'Custom…', seconds: 'custom' },
 ]
 
+const pad2 = (n: number) => String(n).padStart(2, '0')
+// toLocalInput formats an epoch (ms) as a datetime-local value in the browser's local time.
+function toLocalInput(ms: number): string {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
 // DurationButton is an action button that opens a duration menu; onPick gets seconds (null =
-// indefinite). Used for Pause / Hide / Acknowledge.
+// indefinite). "Custom…" reveals a date/time picker to suppress until a chosen moment.
 function DurationButton({ label, onPick, disabled, borderColor }: { label: string; onPick: (seconds: number | null) => void; disabled?: boolean; borderColor?: string }) {
   const [open, setOpen] = useState(false)
-  function pick(s: number | null | 'custom') {
-    setOpen(false)
-    if (s === 'custom') {
-      const h = window.prompt('Duration in hours:')
-      if (h === null) return
-      const n = Number(h)
-      if (!isFinite(n) || n <= 0) return
-      onPick(Math.round(n * 3600))
-    } else onPick(s)
+  const [custom, setCustom] = useState(false)
+  const [val, setVal] = useState('')
+  function close() { setOpen(false); setCustom(false) }
+  function pickPreset(s: number | null | 'custom') {
+    if (s === 'custom') { setVal(toLocalInput(Date.now() + 3600_000)); setCustom(true); return }
+    close(); onPick(s)
+  }
+  function confirmCustom() {
+    const t = new Date(val).getTime()
+    const secs = Math.round((t - Date.now()) / 1000)
+    close()
+    if (isFinite(t) && secs > 0) onPick(secs)
   }
   return (
     <span style={{ position: 'relative', display: 'inline-block' }}>
-      <button onClick={(e) => { e.stopPropagation(); setOpen((o) => !o) }} disabled={disabled} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', borderColor: borderColor || '#333' }}>{label}</button>
+      <button onClick={(e) => { e.stopPropagation(); setCustom(false); setOpen((o) => !o) }} disabled={disabled} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', borderColor: borderColor || '#333' }}>{label}</button>
       {open && (
         <>
-          <div onClick={(e) => { e.stopPropagation(); setOpen(false) }} style={{ position: 'fixed', inset: 0, zIndex: 20 }} />
-          <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 21, background: '#1b1b1b', border: '1px solid #333', borderRadius: 6, minWidth: 140, boxShadow: '0 8px 24px rgba(0,0,0,0.45)', overflow: 'hidden' }}>
-            {DURATIONS.map((d) => (
-              <div key={d.label} onClick={(e) => { e.stopPropagation(); pick(d.seconds) }} style={{ padding: '0.4rem 0.7rem', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>{d.label}</div>
+          <div onClick={(e) => { e.stopPropagation(); close() }} style={{ position: 'fixed', inset: 0, zIndex: 20 }} />
+          <div onClick={(e) => e.stopPropagation()} style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 21, background: '#1b1b1b', border: '1px solid #333', borderRadius: 6, minWidth: custom ? 240 : 140, boxShadow: '0 8px 24px rgba(0,0,0,0.45)', overflow: 'hidden' }}>
+            {!custom && DURATIONS.map((d) => (
+              <div key={d.label} onClick={(e) => { e.stopPropagation(); pickPreset(d.seconds) }} style={{ padding: '0.4rem 0.7rem', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>{d.label}</div>
             ))}
+            {custom && (
+              <div style={{ padding: '0.6rem' }}>
+                <div style={{ fontSize: '0.78rem', color: '#aaa', marginBottom: '0.35rem' }}>Suppress until:</div>
+                <input type="datetime-local" value={val} min={toLocalInput(Date.now())} onChange={(e) => setVal(e.target.value)} style={{ ...input, width: '100%', marginBottom: '0.5rem' }} />
+                <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'flex-end' }}>
+                  <button onClick={(e) => { e.stopPropagation(); setCustom(false) }} style={{ ...ghost, padding: '0.15rem 0.5rem', fontSize: '0.78rem' }}>Back</button>
+                  <button onClick={(e) => { e.stopPropagation(); confirmCustom() }} style={{ ...btn, padding: '0.15rem 0.6rem', fontSize: '0.78rem' }}>Set</button>
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}
