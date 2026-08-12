@@ -8,7 +8,7 @@ type User = { id: number; email: string; name: string; surname: string; role: st
 type Health = { status: string; zabbix: { reachable: boolean; version?: string; error?: string } }
 type Passkey = { id: string; name: string; created: string; last_used: string | null }
 type Host = { id: string; name: string; enabled: boolean; problems: number; severity: number; state: string; paused: boolean }
-type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean; numeric: boolean; category?: string; label?: string }
+type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean; numeric: boolean; paused: boolean; category?: string; label?: string }
 type Problem = { event_id: string; name: string; severity: number; state: string; acknowledged: boolean; item_ids: string[] }
 type SeriesPoint = { t: number; v?: number; min?: number; avg?: number; max?: number }
 type Series = { name: string; units: string; kind: 'history' | 'trend'; points: SeriesPoint[] }
@@ -352,7 +352,7 @@ function MonitoringView({ role }: { role: string }) {
                 )}
               </span>
             </div>
-            {openId === h.id && <HostItems hostId={h.id} />}
+            {openId === h.id && <HostItems hostId={h.id} canPause={canPause} />}
           </div>
         ))}
       </div>
@@ -360,20 +360,28 @@ function MonitoringView({ role }: { role: string }) {
   )
 }
 
-function HostItems({ hostId }: { hostId: string }) {
+function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) {
   const [items, setItems] = useState<SensorItem[] | null>(null)
   const [problems, setProblems] = useState<Problem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [openItem, setOpenItem] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
 
-  useEffect(() => {
-    setItems(null); setError(null)
+  function loadItems(reset = true) {
+    if (reset) setItems(null)
+    setError(null)
     fetch(`/api/hosts/${hostId}/items${showAll ? '?all=1' : ''}`)
       .then(async (r) => { if (!r.ok) throw new Error('items'); return r.json() })
       .then((its: SensorItem[]) => setItems(its))
       .catch(() => setError('Failed to load sensors'))
-  }, [hostId, showAll])
+  }
+  useEffect(() => { loadItems() }, [hostId, showAll])
+
+  async function togglePauseItem(it: SensorItem) {
+    const method = it.paused ? 'DELETE' : 'POST'
+    await fetch(`/api/items/${it.id}/pause`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'POST' ? JSON.stringify({}) : undefined }).catch(() => {})
+    loadItems(false)
+  }
 
   function loadProblems() {
     fetch(`/api/hosts/${hostId}/problems`).then((r) => (r.ok ? r.json() : [])).then((p) => setProblems(p || [])).catch(() => {})
@@ -459,8 +467,18 @@ function HostItems({ hostId }: { hostId: string }) {
                         }}
                       >
                         <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word', borderLeft: `3px solid ${st ? stateColor[st] : 'transparent'}` }}>
-                          {clickable && <span style={{ color: '#6a6', marginRight: '0.4rem', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>}
-                          {label}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            {clickable && <span style={{ color: '#6a6', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>}
+                            <span style={{ opacity: it.paused ? 0.55 : 1 }}>{label}{it.paused && <span style={{ color: '#999', fontSize: '0.8rem' }}> (paused)</span>}</span>
+                            {canPause && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); togglePauseItem(it) }}
+                                style={{ ...ghost, marginLeft: 'auto', padding: '0.1rem 0.45rem', fontSize: '0.75rem' }}
+                              >
+                                {it.paused ? 'Resume' : 'Pause'}
+                              </button>
+                            )}
+                          </div>
                         </td>
                         <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
                           {it.supported

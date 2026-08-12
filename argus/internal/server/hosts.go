@@ -49,6 +49,7 @@ type itemView struct {
 	Supported bool   `json:"supported"`
 	Enabled   bool   `json:"enabled"`
 	Numeric   bool   `json:"numeric"`            // graphable (value_type float or unsigned)
+	Paused    bool   `json:"paused"`
 	Category  string `json:"category,omitempty"` // set in curated mode
 	Label     string `json:"label,omitempty"`    // friendly name in curated mode
 }
@@ -176,31 +177,35 @@ func (s *Server) handleAckEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// POST /api/hosts/{id}/pause — pause a host in Argus (helpdesk/admin).
-func (s *Server) handlePauseHost(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Note string `json:"note"`
+// pauseHandler pauses a host or item in Argus (helpdesk/admin), by scope.
+func (s *Server) pauseHandler(scope string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Note string `json:"note"`
+		}
+		decodeOptional(w, r, &req)
+		caller, _ := auth.UserFrom(r.Context())
+		var by int64
+		if caller != nil {
+			by = caller.ID
+		}
+		if err := s.st.SetPause(r.Context(), scope, r.PathValue("id"), by, req.Note); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
-	decodeOptional(w, r, &req)
-	caller, _ := auth.UserFrom(r.Context())
-	var by int64
-	if caller != nil {
-		by = caller.ID
-	}
-	if err := s.st.SetPause(r.Context(), "host", r.PathValue("id"), by, req.Note); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// DELETE /api/hosts/{id}/pause — resume a host (helpdesk/admin).
-func (s *Server) handleUnpauseHost(w http.ResponseWriter, r *http.Request) {
-	if err := s.st.ClearPause(r.Context(), "host", r.PathValue("id")); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-		return
+// unpauseHandler resumes a host or item, by scope.
+func (s *Server) unpauseHandler(scope string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := s.st.ClearPause(r.Context(), scope, r.PathValue("id")); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
@@ -217,6 +222,7 @@ func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	all := r.URL.Query().Get("all") == "1"
+	pausedItems, _ := s.st.PausedSet(ctx, "item")
 	out := make([]itemView, 0, len(items))
 	for _, it := range items {
 		var clock int64
@@ -233,6 +239,7 @@ func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 			Supported: it.State == "0",
 			Enabled:   it.Status == "0",
 			Numeric:   numericValueType(it.ValueType),
+			Paused:    pausedItems[it.ItemID],
 		}
 		if !all {
 			cat, label, ok := classifyItem(it.Key, it.Name)

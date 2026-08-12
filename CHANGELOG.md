@@ -11,6 +11,19 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.17] - 2026-08-12
+
+### Added
+- **Per-sensor pause** — each sensor row now has its own Pause/Resume control (Helpdesk +
+  Admin); paused sensors are dimmed and marked "(paused)". Complements host-level pause.
+- Endpoints: `POST`/`DELETE /api/items/{id}/pause`; items carry a `paused` flag.
+
+### Notes
+- Acknowledge was already per-problem (each active problem has its own Acknowledge button);
+  Zabbix acknowledges at the event level, tied to the specific failing trigger/sensor.
+
+---
+
 ## [0.0.16] - 2026-08-12
 
 **States model — Acknowledge & Pause.** The first of the state controls the dashboards will

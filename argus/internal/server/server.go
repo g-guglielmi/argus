@@ -69,8 +69,10 @@ func New(cfg config.Config, zbx *zabbix.Client, st *store.Store, logger *slog.Lo
 	mux.HandleFunc("GET /api/items/{id}/history", auth.RequireAuth(s.handleItemHistory))
 	// states: acknowledge (any user) and pause/resume (helpdesk/admin)
 	mux.HandleFunc("POST /api/events/{id}/ack", auth.RequireAuth(s.handleAckEvent))
-	mux.HandleFunc("POST /api/hosts/{id}/pause", auth.RequireRoles(s.handlePauseHost, "admin", "helpdesk"))
-	mux.HandleFunc("DELETE /api/hosts/{id}/pause", auth.RequireRoles(s.handleUnpauseHost, "admin", "helpdesk"))
+	mux.HandleFunc("POST /api/hosts/{id}/pause", auth.RequireRoles(s.pauseHandler("host"), "admin", "helpdesk"))
+	mux.HandleFunc("DELETE /api/hosts/{id}/pause", auth.RequireRoles(s.unpauseHandler("host"), "admin", "helpdesk"))
+	mux.HandleFunc("POST /api/items/{id}/pause", auth.RequireRoles(s.pauseHandler("item"), "admin", "helpdesk"))
+	mux.HandleFunc("DELETE /api/items/{id}/pause", auth.RequireRoles(s.unpauseHandler("item"), "admin", "helpdesk"))
 
 	// self-service MFA (any signed-in user)
 	mux.HandleFunc("GET /api/me/mfa", auth.RequireAuth(s.handleMFAStatus))
