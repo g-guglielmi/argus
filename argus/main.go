@@ -36,6 +36,11 @@ func main() {
 
 	zbx := zabbix.New(cfg.ZabbixAPIURL, cfg.ZabbixAPIToken)
 
+	// Background sweeper: re-enables timed pauses and prunes expired suppressions.
+	sweepCtx, sweepCancel := context.WithCancel(context.Background())
+	defer sweepCancel()
+	go server.StartExpirySweeper(sweepCtx, st, zbx, logger)
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.New(cfg, zbx, st, logger),

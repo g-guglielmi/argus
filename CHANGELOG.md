@@ -11,6 +11,28 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.23] - 2026-08-12
+
+**Durations, un-acknowledge, and faded acknowledged state.**
+
+### Added
+- **Every suppression takes a duration** — Acknowledge, Pause, and Hide now offer
+  **1 hour / 8 hours / 1 day / 1 week / Indefinitely / Custom…** When the timer expires the
+  state clears automatically: hide/ack lazily, and a background **sweeper** re-enables timed
+  **Pause**s in Zabbix.
+- **Un-acknowledge** brings a problem back into the error state. Acknowledge is now tracked in
+  Argus (with expiry) and mirrored to Zabbix, so it can be undone and can expire.
+- **Acknowledged problems fade** (PRTG-style): red/amber become a muted tone in the Overview,
+  the host problem panel, and the sensor-row highlight — still visible, clearly de-emphasized.
+
+### Changed
+- Suppression storage generalized to a single `suppressions` table (kind hide/pause/ack, scope
+  host/item/event, optional `until`). Endpoints `POST /api/.../{pause,hide}` and
+  `POST /api/events/{id}/ack` accept `duration_seconds` (0 = indefinite); `DELETE
+  /api/events/{id}/ack` un-acknowledges.
+
+---
+
 ## [0.0.22] - 2026-08-12
 
 **Overview dashboard.** The cross-host "what's wrong right now" view — now the default landing.

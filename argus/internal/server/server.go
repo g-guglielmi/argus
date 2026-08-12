@@ -71,6 +71,7 @@ func New(cfg config.Config, zbx *zabbix.Client, st *store.Store, logger *slog.Lo
 	// states: acknowledge (any user); pause = Zabbix enable/disable, hide = Argus suppression
 	// (both helpdesk/admin)
 	mux.HandleFunc("POST /api/events/{id}/ack", auth.RequireAuth(s.handleAckEvent))
+	mux.HandleFunc("DELETE /api/events/{id}/ack", auth.RequireAuth(s.handleUnackEvent))
 	mux.HandleFunc("POST /api/hosts/{id}/pause", auth.RequireRoles(s.zbxEnableHandler("host", false), "admin", "helpdesk"))
 	mux.HandleFunc("DELETE /api/hosts/{id}/pause", auth.RequireRoles(s.zbxEnableHandler("host", true), "admin", "helpdesk"))
 	mux.HandleFunc("POST /api/items/{id}/pause", auth.RequireRoles(s.zbxEnableHandler("item", false), "admin", "helpdesk"))

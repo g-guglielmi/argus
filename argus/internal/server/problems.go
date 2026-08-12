@@ -38,8 +38,9 @@ func (s *Server) handleProblems(w http.ResponseWriter, r *http.Request) {
 		tids = append(tids, p.ObjectID)
 	}
 	targets, _ := s.zbx.TriggerTargets(ctx, tids)
-	hiddenHosts, _ := s.st.HiddenSet(ctx, "host")
-	hiddenItems, _ := s.st.HiddenSet(ctx, "item")
+	hiddenHosts, _ := s.st.ActiveSuppressions(ctx, "hide", "host")
+	hiddenItems, _ := s.st.ActiveSuppressions(ctx, "hide", "item")
+	acked, _ := s.st.ActiveSuppressions(ctx, "ack", "event")
 
 	out := make([]problemRow, 0, len(problems))
 	for _, p := range problems {
@@ -72,7 +73,7 @@ func (s *Server) handleProblems(w http.ResponseWriter, r *http.Request) {
 			HostName:     h.Name,
 			Severity:     sev,
 			State:        severityState(sev),
-			Acknowledged: p.Acknowledged == "1",
+			Acknowledged: acked[p.EventID],
 			Clock:        atoi64(p.Clock),
 		})
 	}

@@ -21,11 +21,57 @@ const stateRank: Record<string, number> = { ok: 0, warning: 1, error: 2 }
 const PAUSED_BLUE = '#4a86c5'
 const HIDDEN_GREY = '#888'
 
+// Faded health colours for acknowledged problems (PRTG-style: still visible, muted).
+const stateColorFaded: Record<string, string> = { ok: '#4a6a4a', warning: '#8a7a45', error: '#8a5252' }
+function healthColor(state: string, acked: boolean): string {
+  return (acked ? stateColorFaded : stateColor)[state] || '#777'
+}
+
 // dotColor: paused (blue) and hidden (grey) override the health colour.
 function dotColor(paused: boolean, hidden: boolean, state: string): string {
   if (paused) return PAUSED_BLUE
   if (hidden) return HIDDEN_GREY
   return stateColor[state] || '#777'
+}
+
+const DURATIONS: { label: string; seconds: number | null | 'custom' }[] = [
+  { label: '1 hour', seconds: 3600 },
+  { label: '8 hours', seconds: 28800 },
+  { label: '1 day', seconds: 86400 },
+  { label: '1 week', seconds: 604800 },
+  { label: 'Indefinitely', seconds: null },
+  { label: 'Custom…', seconds: 'custom' },
+]
+
+// DurationButton is an action button that opens a duration menu; onPick gets seconds (null =
+// indefinite). Used for Pause / Hide / Acknowledge.
+function DurationButton({ label, onPick, disabled, borderColor }: { label: string; onPick: (seconds: number | null) => void; disabled?: boolean; borderColor?: string }) {
+  const [open, setOpen] = useState(false)
+  function pick(s: number | null | 'custom') {
+    setOpen(false)
+    if (s === 'custom') {
+      const h = window.prompt('Duration in hours:')
+      if (h === null) return
+      const n = Number(h)
+      if (!isFinite(n) || n <= 0) return
+      onPick(Math.round(n * 3600))
+    } else onPick(s)
+  }
+  return (
+    <span style={{ position: 'relative', display: 'inline-block' }}>
+      <button onClick={(e) => { e.stopPropagation(); setOpen((o) => !o) }} disabled={disabled} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', borderColor: borderColor || '#333' }}>{label}</button>
+      {open && (
+        <>
+          <div onClick={(e) => { e.stopPropagation(); setOpen(false) }} style={{ position: 'fixed', inset: 0, zIndex: 20 }} />
+          <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 21, background: '#1b1b1b', border: '1px solid #333', borderRadius: 6, minWidth: 140, boxShadow: '0 8px 24px rgba(0,0,0,0.45)', overflow: 'hidden' }}>
+            {DURATIONS.map((d) => (
+              <div key={d.label} onClick={(e) => { e.stopPropagation(); pick(d.seconds) }} style={{ padding: '0.4rem 0.7rem', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>{d.label}</div>
+            ))}
+          </div>
+        </>
+      )}
+    </span>
+  )
 }
 
 function relTime(unix: number): string {
@@ -294,8 +340,12 @@ function OverviewView() {
   }
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t) }, [])
 
-  async function ack(p: ProblemRow) {
-    await fetch(`/api/events/${p.event_id}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {})
+  async function ack(p: ProblemRow, seconds: number | null) {
+    await fetch(`/api/events/${p.event_id}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ duration_seconds: seconds ?? 0 }) }).catch(() => {})
+    load()
+  }
+  async function unack(p: ProblemRow) {
+    await fetch(`/api/events/${p.event_id}/ack`, { method: 'DELETE' }).catch(() => {})
     load()
   }
 
@@ -320,17 +370,17 @@ function OverviewView() {
       )}
       <div style={{ display: 'grid', gap: '0.4rem' }}>
         {filtered.map((p) => (
-          <div key={p.event_id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.5rem 0.7rem', border: '1px solid #2a2a2a', borderLeft: `3px solid ${stateColor[p.state] || '#777'}`, borderRadius: 6, opacity: p.acknowledged ? 0.65 : 1 }}>
-            <span style={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0, background: stateColor[p.state] || '#777' }} />
+          <div key={p.event_id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.5rem 0.7rem', border: '1px solid #2a2a2a', borderLeft: `3px solid ${healthColor(p.state, p.acknowledged)}`, borderRadius: 6, opacity: p.acknowledged ? 0.8 : 1 }}>
+            <span style={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0, background: healthColor(p.state, p.acknowledged) }} />
             <span style={{ minWidth: 0 }}>
               <strong>{p.host_name}</strong>
               <span style={{ color: '#bbb' }}> · {p.name}</span>
             </span>
-            <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
+            <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.6rem', flexShrink: 0 }}>
               <span style={{ color: '#888', fontSize: '0.85rem' }}>{relTime(p.clock)}</span>
               {p.acknowledged
-                ? <span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acknowledged</span>
-                : <button onClick={() => ack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Acknowledge</button>}
+                ? <><span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acknowledged</span><button onClick={() => unack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Unacknowledge</button></>
+                : <DurationButton label="Acknowledge" onPick={(s) => ack(p, s)} />}
             </span>
           </div>
         ))}
@@ -378,12 +428,18 @@ function MonitoringView({ role }: { role: string }) {
   useEffect(() => { load(true) }, [])
 
   const [busyId, setBusyId] = useState<string | null>(null)
-  async function toggle(h: Host, action: 'pause' | 'hide') {
-    const active = action === 'pause' ? h.paused : h.hidden
+  async function setState(h: Host, action: 'pause' | 'hide', seconds: number | null) {
     setBusyId(h.id)
-    const res = await fetch(`/api/hosts/${h.id}/${action}`, { method: active ? 'DELETE' : 'POST', headers: { 'Content-Type': 'application/json' }, body: active ? undefined : JSON.stringify({}) }).catch(() => null)
+    const res = await fetch(`/api/hosts/${h.id}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ duration_seconds: seconds ?? 0 }) }).catch(() => null)
     setBusyId(null)
     if (res && !res.ok) { setError(await errText(res, `Could not ${action} host`)); return }
+    load()
+  }
+  async function clearState(h: Host, action: 'pause' | 'hide') {
+    setBusyId(h.id)
+    const res = await fetch(`/api/hosts/${h.id}/${action}`, { method: 'DELETE' }).catch(() => null)
+    setBusyId(null)
+    if (res && !res.ok) { setError(await errText(res, `Could not resume host`)); return }
     load()
   }
 
@@ -414,8 +470,12 @@ function MonitoringView({ role }: { role: string }) {
                 )}
                 {canPause && (
                   <>
-                    <button onClick={(e) => { e.stopPropagation(); toggle(h, 'pause') }} disabled={busyId === h.id} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem', borderColor: h.paused ? PAUSED_BLUE : '#333' }}>{h.paused ? 'Resume' : 'Pause'}</button>
-                    <button onClick={(e) => { e.stopPropagation(); toggle(h, 'hide') }} disabled={busyId === h.id} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>{h.hidden ? 'Show' : 'Hide'}</button>
+                    {h.paused
+                      ? <button onClick={(e) => { e.stopPropagation(); clearState(h, 'pause') }} disabled={busyId === h.id} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem', borderColor: PAUSED_BLUE }}>Resume</button>
+                      : <DurationButton label="Pause" onPick={(s) => setState(h, 'pause', s)} disabled={busyId === h.id} />}
+                    {h.hidden
+                      ? <button onClick={(e) => { e.stopPropagation(); clearState(h, 'hide') }} disabled={busyId === h.id} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Show</button>
+                      : <DurationButton label="Hide" onPick={(s) => setState(h, 'hide', s)} disabled={busyId === h.id} />}
                   </>
                 )}
               </span>
@@ -446,10 +506,15 @@ function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: strin
   useEffect(() => { loadItems() }, [hostId, showAll])
 
   const [busyItem, setBusyItem] = useState<string | null>(null)
-  async function toggleItem(it: SensorItem, action: 'pause' | 'hide') {
-    const active = action === 'pause' ? it.paused : it.hidden
+  async function setItemState(it: SensorItem, action: 'pause' | 'hide', seconds: number | null) {
     setBusyItem(it.id)
-    await fetch(`/api/items/${it.id}/${action}`, { method: active ? 'DELETE' : 'POST', headers: { 'Content-Type': 'application/json' }, body: active ? undefined : JSON.stringify({}) }).catch(() => {})
+    await fetch(`/api/items/${it.id}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ duration_seconds: seconds ?? 0 }) }).catch(() => {})
+    setBusyItem(null)
+    loadItems(false)
+  }
+  async function clearItemState(it: SensorItem, action: 'pause' | 'hide') {
+    setBusyItem(it.id)
+    await fetch(`/api/items/${it.id}/${action}`, { method: 'DELETE' }).catch(() => {})
     setBusyItem(null)
     loadItems(false)
   }
@@ -459,19 +524,27 @@ function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: strin
   }
   useEffect(() => { loadProblems() }, [hostId])
 
-  async function ack(p: Problem) {
-    await fetch(`/api/events/${p.event_id}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {})
+  async function ack(p: Problem, seconds: number | null) {
+    await fetch(`/api/events/${p.event_id}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ duration_seconds: seconds ?? 0 }) }).catch(() => {})
+    loadProblems()
+  }
+  async function unack(p: Problem) {
+    await fetch(`/api/events/${p.event_id}/ack`, { method: 'DELETE' }).catch(() => {})
     loadProblems()
   }
 
   if (error) return <p style={{ color: 'crimson', margin: '0.4rem 0 0.8rem' }}>{error}</p>
   if (!items) return <p style={{ color: '#888', margin: '0.4rem 0 0.8rem' }}>Loading sensors…</p>
 
-  // Map each problem-referenced item to its worst state, so we can highlight those rows.
+  // Map each problem-referenced item to its worst state (and whether every problem on it is
+  // acknowledged, so the highlight fades).
   const itemState: Record<string, string> = {}
+  const itemAcked: Record<string, boolean> = {}
   for (const p of problems) {
     for (const id of p.item_ids) {
       if (!itemState[id] || stateRank[p.state] > stateRank[itemState[id]]) itemState[id] = p.state
+      if (itemAcked[id] === undefined) itemAcked[id] = true
+      if (!p.acknowledged) itemAcked[id] = false
     }
   }
 
@@ -482,12 +555,12 @@ function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: strin
           <div style={{ color: '#c88', fontSize: '0.8rem', marginBottom: '0.25rem' }}>Active problems</div>
           {problems.map((p, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.2rem 0' }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: stateColor[p.state] || '#aaa' }} />
+              <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: healthColor(p.state, p.acknowledged) }} />
               <span style={{ opacity: p.acknowledged ? 0.7 : 1 }}>{p.name}</span>
-              <span style={{ marginLeft: 'auto' }}>
+              <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 {p.acknowledged
-                  ? <span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acknowledged</span>
-                  : <button onClick={() => ack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Acknowledge</button>}
+                  ? <><span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acknowledged</span><button onClick={() => unack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Unacknowledge</button></>
+                  : <DurationButton label="Acknowledge" onPick={(s) => ack(p, s)} />}
               </span>
             </div>
           ))}
@@ -538,10 +611,10 @@ function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: strin
                           borderTop: '1px solid #262626',
                           opacity: it.supported ? 1 : 0.55,
                           cursor: clickable ? 'pointer' : 'default',
-                          background: open ? 'rgba(47,111,79,0.14)' : (st ? (st === 'error' ? 'rgba(180,40,40,0.16)' : 'rgba(217,164,65,0.14)') : undefined),
+                          background: open ? 'rgba(47,111,79,0.14)' : (st ? (itemAcked[it.id] ? 'rgba(120,120,120,0.10)' : (st === 'error' ? 'rgba(180,40,40,0.16)' : 'rgba(217,164,65,0.14)')) : undefined),
                         }}
                       >
-                        <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word', borderLeft: `3px solid ${st ? stateColor[st] : 'transparent'}` }}>
+                        <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word', borderLeft: `3px solid ${st ? healthColor(st, itemAcked[it.id]) : 'transparent'}` }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                             {clickable && <span style={{ color: '#6a6', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>}
                             <span style={{ opacity: effPaused || effHidden ? 0.55 : 1 }}>
@@ -561,8 +634,12 @@ function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: strin
                             <span style={{ color: '#999' }}>{relTime(it.last_clock)}</span>
                             {canPause && (
                               <>
-                                <button title={hostPaused ? 'Controlled by the host' : ''} onClick={(e) => { e.stopPropagation(); toggleItem(it, 'pause') }} disabled={busyItem === it.id || hostPaused} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', borderColor: it.paused ? PAUSED_BLUE : '#333', opacity: hostPaused ? 0.4 : 1 }}>{it.paused ? 'Resume' : 'Pause'}</button>
-                                <button title={hostHidden ? 'Controlled by the host' : ''} onClick={(e) => { e.stopPropagation(); toggleItem(it, 'hide') }} disabled={busyItem === it.id || hostHidden} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', opacity: hostHidden ? 0.4 : 1 }}>{it.hidden ? 'Show' : 'Hide'}</button>
+                                {it.paused
+                                  ? <button onClick={(e) => { e.stopPropagation(); clearItemState(it, 'pause') }} disabled={busyItem === it.id || hostPaused} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', borderColor: PAUSED_BLUE, opacity: hostPaused ? 0.4 : 1 }}>Resume</button>
+                                  : <DurationButton label="Pause" disabled={busyItem === it.id || hostPaused} onPick={(s) => setItemState(it, 'pause', s)} />}
+                                {it.hidden
+                                  ? <button onClick={(e) => { e.stopPropagation(); clearItemState(it, 'hide') }} disabled={busyItem === it.id || hostHidden} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', opacity: hostHidden ? 0.4 : 1 }}>Show</button>
+                                  : <DurationButton label="Hide" disabled={busyItem === it.id || hostHidden} onPick={(s) => setItemState(it, 'hide', s)} />}
                               </>
                             )}
                           </div>

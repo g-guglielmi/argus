@@ -60,6 +60,16 @@ func numericValueType(vt string) bool { return vt == "0" || vt == "3" }
 
 func atoi(s string) int { n, _ := strconv.Atoi(s); return n }
 
+// untilFrom converts a duration in seconds to an absolute expiry unix time; 0/negative means
+// indefinite (nil).
+func untilFrom(seconds int64) *int64 {
+	if seconds <= 0 {
+		return nil
+	}
+	u := time.Now().Unix() + seconds
+	return &u
+}
+
 func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 	if !s.zbx.Authenticated() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Zabbix API token not configured (set ARGUS_ZABBIX_API_TOKEN)"})
@@ -92,7 +102,7 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	hidden, _ := s.st.HiddenSet(ctx, "host")
+	hidden, _ := s.st.ActiveSuppressions(ctx, "hide", "host")
 
 	out := make([]hostView, 0, len(hosts))
 	for _, h := range hosts {
@@ -137,6 +147,7 @@ func (s *Server) handleHostProblems(w http.ResponseWriter, r *http.Request) {
 		tids = append(tids, p.ObjectID)
 	}
 	itemsByTrigger, _ := s.zbx.TriggerItems(ctx, tids)
+	acked, _ := s.st.ActiveSuppressions(ctx, "ack", "event") // Argus is the ack source of truth
 
 	out := make([]problemView, 0, len(problems))
 	for _, p := range problems {
@@ -150,37 +161,57 @@ func (s *Server) handleHostProblems(w http.ResponseWriter, r *http.Request) {
 			Name:         p.Name,
 			Severity:     sev,
 			State:        severityState(sev),
-			Acknowledged: p.Acknowledged == "1",
+			Acknowledged: acked[p.EventID],
 			ItemIDs:      ids,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// POST /api/events/{id}/ack — acknowledge a Zabbix problem (any signed-in user).
+// POST /api/events/{id}/ack — acknowledge a problem (any signed-in user), optional duration.
+// Argus records the ack (so it can expire and be undone) and mirrors it to Zabbix best-effort.
 func (s *Server) handleAckEvent(w http.ResponseWriter, r *http.Request) {
-	if !s.zbx.Authenticated() {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Zabbix API token not configured (set ARGUS_ZABBIX_API_TOKEN)"})
-		return
-	}
 	var req struct {
-		Message string `json:"message"`
+		Message         string `json:"message"`
+		DurationSeconds int64  `json:"duration_seconds"`
 	}
-	decodeOptional(w, r, &req) // message is optional
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-	defer cancel()
-	if err := s.zbx.AcknowledgeEvent(ctx, r.PathValue("id"), req.Message); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Zabbix: " + err.Error()})
+	decodeOptional(w, r, &req)
+	id := r.PathValue("id")
+	caller, _ := auth.UserFrom(r.Context())
+	var by int64
+	if caller != nil {
+		by = caller.ID
+	}
+	if err := s.st.SetSuppression(r.Context(), "ack", "event", id, by, req.Message, untilFrom(req.DurationSeconds)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
+	}
+	if s.zbx.Authenticated() {
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		_ = s.zbx.AcknowledgeEvent(ctx, id, req.Message) // best-effort mirror
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// hideHandler hides (Argus-side suppression) a host or item; collection continues.
+// DELETE /api/events/{id}/ack — un-acknowledge (bring the problem back).
+func (s *Server) handleUnackEvent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	_ = s.st.ClearSuppression(r.Context(), "ack", "event", id)
+	if s.zbx.Authenticated() {
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		_ = s.zbx.UnacknowledgeEvent(ctx, id) // best-effort mirror
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// hideHandler hides (Argus-side suppression) a host or item; collection continues. Optional duration.
 func (s *Server) hideHandler(scope string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Note string `json:"note"`
+			Note            string `json:"note"`
+			DurationSeconds int64  `json:"duration_seconds"`
 		}
 		decodeOptional(w, r, &req)
 		caller, _ := auth.UserFrom(r.Context())
@@ -188,7 +219,7 @@ func (s *Server) hideHandler(scope string) http.HandlerFunc {
 		if caller != nil {
 			by = caller.ID
 		}
-		if err := s.st.SetHidden(r.Context(), scope, r.PathValue("id"), by, req.Note); err != nil {
+		if err := s.st.SetSuppression(r.Context(), "hide", scope, r.PathValue("id"), by, req.Note, untilFrom(req.DurationSeconds)); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			return
 		}
@@ -199,7 +230,7 @@ func (s *Server) hideHandler(scope string) http.HandlerFunc {
 // unhideHandler un-hides a host or item.
 func (s *Server) unhideHandler(scope string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := s.st.ClearHidden(r.Context(), scope, r.PathValue("id")); err != nil {
+		if err := s.st.ClearSuppression(r.Context(), "hide", scope, r.PathValue("id")); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			return
 		}
@@ -208,13 +239,18 @@ func (s *Server) unhideHandler(scope string) http.HandlerFunc {
 }
 
 // zbxEnableHandler pauses (enabled=false) or resumes (enabled=true) a host/item by
-// disabling/enabling it in Zabbix, which actually stops/starts collection.
+// disabling/enabling it in Zabbix, which actually stops/starts collection. Pause takes an
+// optional duration; a background sweeper re-enables it when the expiry passes.
 func (s *Server) zbxEnableHandler(scope string, enabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.zbx.Authenticated() {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Zabbix API token not configured (set ARGUS_ZABBIX_API_TOKEN)"})
 			return
 		}
+		var req struct {
+			DurationSeconds int64 `json:"duration_seconds"`
+		}
+		decodeOptional(w, r, &req)
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		id := r.PathValue("id")
@@ -228,6 +264,16 @@ func (s *Server) zbxEnableHandler(scope string, enabled bool) http.HandlerFunc {
 			// Most often a permission error: the token's Zabbix user lacks write access.
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Zabbix: " + err.Error()})
 			return
+		}
+		caller, _ := auth.UserFrom(r.Context())
+		var by int64
+		if caller != nil {
+			by = caller.ID
+		}
+		if enabled {
+			_ = s.st.ClearSuppression(r.Context(), "pause", scope, id)
+		} else {
+			_ = s.st.SetSuppression(r.Context(), "pause", scope, id, by, "", untilFrom(req.DurationSeconds))
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
@@ -247,7 +293,7 @@ func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	all := r.URL.Query().Get("all") == "1"
-	hiddenItems, _ := s.st.HiddenSet(ctx, "item")
+	hiddenItems, _ := s.st.ActiveSuppressions(ctx, "hide", "item")
 	out := make([]itemView, 0, len(items))
 	for _, it := range items {
 		var clock int64

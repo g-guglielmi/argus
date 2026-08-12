@@ -353,3 +353,8 @@ func (c *Client) AcknowledgeEvent(ctx context.Context, eventID, message string) 
 	params["action"] = action
 	return c.call(ctx, "event.acknowledge", params, true, nil)
 }
+
+// UnacknowledgeEvent removes the acknowledgement from a Zabbix problem event.
+func (c *Client) UnacknowledgeEvent(ctx context.Context, eventID string) error {
+	return c.call(ctx, "event.acknowledge", map[string]any{"eventids": eventID, "action": 16}, true, nil)
+}

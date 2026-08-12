@@ -112,15 +112,19 @@ CREATE TABLE IF NOT EXISTS webauthn_sessions (
   expires_at INTEGER NOT NULL
 );
 
--- Argus-side "hidden" state (host or item): suppress alerting/surfacing but keep collecting.
--- (The PRTG-style "pause" that stops collection is handled by disabling the item/host in Zabbix.)
-CREATE TABLE IF NOT EXISTS hidden (
-  scope     TEXT NOT NULL,        -- 'host' | 'item'
-  target_id TEXT NOT NULL,
-  by_user   INTEGER,
-  note      TEXT NOT NULL DEFAULT '',
-  hidden_at INTEGER NOT NULL,
-  PRIMARY KEY (scope, target_id)
+-- Argus-tracked suppression state with optional expiry (until NULL = indefinite):
+--   kind 'hide'  scope host|item  — mute in Argus, keep collecting
+--   kind 'pause' scope host|item  — expiry bookkeeping for the Zabbix disable (PRTG-style stop)
+--   kind 'ack'   scope event      — acknowledged problem (mirrored to Zabbix)
+CREATE TABLE IF NOT EXISTS suppressions (
+  kind       TEXT NOT NULL,       -- 'hide' | 'pause' | 'ack'
+  scope      TEXT NOT NULL,       -- 'host' | 'item' | 'event'
+  target_id  TEXT NOT NULL,
+  by_user    INTEGER,
+  note       TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  until      INTEGER,             -- NULL = indefinite
+  PRIMARY KEY (kind, scope, target_id)
 );
 `); err != nil {
 		return err
@@ -337,24 +341,37 @@ func (s *Store) DeleteMFAChallenge(ctx context.Context, id string) error {
 	return err
 }
 
-// --- hidden (Argus-side suppression) ---
+// --- suppressions (hide / pause-expiry / ack) with optional expiry ---
 
-func (s *Store) SetHidden(ctx context.Context, scope, targetID string, byUser int64, note string) error {
+// Suppression identifies a scope+target (used when sweeping expired entries).
+type Suppression struct {
+	Scope    string
+	TargetID string
+}
+
+// SetSuppression upserts a suppression; until is the expiry unix time (nil = indefinite).
+func (s *Store) SetSuppression(ctx context.Context, kind, scope, targetID string, byUser int64, note string, until *int64) error {
+	var u any
+	if until != nil {
+		u = *until
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO hidden(scope,target_id,by_user,note,hidden_at) VALUES(?,?,?,?,?)
-		 ON CONFLICT(scope,target_id) DO UPDATE SET by_user=excluded.by_user, note=excluded.note, hidden_at=excluded.hidden_at`,
-		scope, targetID, byUser, note, time.Now().Unix())
+		`INSERT INTO suppressions(kind,scope,target_id,by_user,note,created_at,until) VALUES(?,?,?,?,?,?,?)
+		 ON CONFLICT(kind,scope,target_id) DO UPDATE SET by_user=excluded.by_user, note=excluded.note, created_at=excluded.created_at, until=excluded.until`,
+		kind, scope, targetID, byUser, note, time.Now().Unix(), u)
 	return err
 }
 
-func (s *Store) ClearHidden(ctx context.Context, scope, targetID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM hidden WHERE scope=? AND target_id=?`, scope, targetID)
+func (s *Store) ClearSuppression(ctx context.Context, kind, scope, targetID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM suppressions WHERE kind=? AND scope=? AND target_id=?`, kind, scope, targetID)
 	return err
 }
 
-// HiddenSet returns the set of hidden target ids for a scope.
-func (s *Store) HiddenSet(ctx context.Context, scope string) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT target_id FROM hidden WHERE scope=?`, scope)
+// ActiveSuppressions returns the set of non-expired target ids for a kind+scope.
+func (s *Store) ActiveSuppressions(ctx context.Context, kind, scope string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT target_id FROM suppressions WHERE kind=? AND scope=? AND (until IS NULL OR until > ?)`,
+		kind, scope, time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -368,6 +385,34 @@ func (s *Store) HiddenSet(ctx context.Context, scope string) (map[string]bool, e
 		out[id] = true
 	}
 	return out, rows.Err()
+}
+
+// ExpiredPauses returns pause suppressions whose expiry has passed (for the re-enable sweeper).
+func (s *Store) ExpiredPauses(ctx context.Context) ([]Suppression, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT scope, target_id FROM suppressions WHERE kind='pause' AND until IS NOT NULL AND until <= ?`,
+		time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Suppression
+	for rows.Next() {
+		var sp Suppression
+		if err := rows.Scan(&sp.Scope, &sp.TargetID); err != nil {
+			return nil, err
+		}
+		out = append(out, sp)
+	}
+	return out, rows.Err()
+}
+
+// DeleteExpiredNonPause removes expired hide/ack rows (pause rows are cleared by the sweeper
+// after re-enabling in Zabbix).
+func (s *Store) DeleteExpiredNonPause(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM suppressions WHERE kind!='pause' AND until IS NOT NULL AND until <= ?`, time.Now().Unix())
+	return err
 }
 
 // --- passkeys / WebAuthn ---
