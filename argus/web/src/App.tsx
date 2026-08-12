@@ -10,6 +10,7 @@ type Passkey = { id: string; name: string; created: string; last_used: string | 
 type Host = { id: string; name: string; problems: number; severity: number; state: string; paused: boolean; hidden: boolean }
 type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; numeric: boolean; paused: boolean; hidden: boolean; category?: string; label?: string }
 type Problem = { event_id: string; name: string; severity: number; state: string; acknowledged: boolean; item_ids: string[] }
+type ProblemRow = { event_id: string; name: string; host_id: string; host_name: string; severity: number; state: string; acknowledged: boolean; clock: number }
 type SeriesPoint = { t: number; v?: number; min?: number; avg?: number; max?: number }
 type Series = { name: string; units: string; kind: 'history' | 'trend'; points: SeriesPoint[] }
 
@@ -252,7 +253,7 @@ function Login({ onSuccess, passkeysAvailable }: { onSuccess: (m: Me) => void; p
 }
 
 function AppShell({ me, onLogout, passkeysAvailable }: { me: Me; onLogout: () => void; passkeysAvailable: boolean }) {
-  const [view, setView] = useState<'dashboard' | 'monitoring' | 'users' | 'account'>('dashboard')
+  const [view, setView] = useState<'overview' | 'dashboard' | 'monitoring' | 'users' | 'account'>('overview')
   async function logout() { await fetch('/api/logout', { method: 'POST' }).catch(() => {}); onLogout() }
   const tab = (id: typeof view, label: string) => (
     <button onClick={() => setView(id)} style={{ ...ghost, borderColor: view === id ? '#2f6f4f' : '#333' }}>{label}</button>
@@ -261,8 +262,9 @@ function AppShell({ me, onLogout, passkeysAvailable }: { me: Me; onLogout: () =>
     <Frame>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '1rem 0 1.25rem', flexWrap: 'wrap', gap: '0.5rem' }}>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {tab('dashboard', 'Dashboard')}
+          {tab('overview', 'Overview')}
           {tab('monitoring', 'Monitoring')}
+          {tab('dashboard', 'Dashboard')}
           {me.role === 'admin' && tab('users', 'Users')}
           {tab('account', 'Account')}
         </div>
@@ -271,11 +273,69 @@ function AppShell({ me, onLogout, passkeysAvailable }: { me: Me; onLogout: () =>
           <button onClick={logout} style={ghost}>Log out</button>
         </div>
       </div>
+      {view === 'overview' && <OverviewView />}
       {view === 'dashboard' && <DashboardView />}
       {view === 'monitoring' && <MonitoringView role={me.role} />}
       {view === 'users' && me.role === 'admin' && <UsersView />}
       {view === 'account' && <AccountView passkeysAvailable={passkeysAvailable} />}
     </Frame>
+  )
+}
+
+function OverviewView() {
+  const [rows, setRows] = useState<ProblemRow[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [mode, setMode] = useState<'errors' | 'both'>('errors')
+
+  function load() {
+    fetch('/api/problems')
+      .then(async (r) => { if (!r.ok) { setError(await errText(r, 'Failed to load problems')); return } setRows(await r.json()); setError(null) })
+      .catch(() => setError('Failed to load problems'))
+  }
+  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t) }, [])
+
+  async function ack(p: ProblemRow) {
+    await fetch(`/api/events/${p.event_id}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {})
+    load()
+  }
+
+  const filtered = (rows || [])
+    .filter((p) => (mode === 'errors' ? p.state === 'error' && !p.acknowledged : p.state === 'error' || p.state === 'warning'))
+    .sort((a, b) => (stateRank[b.state] - stateRank[a.state]) || (Number(a.acknowledged) - Number(b.acknowledged)) || (b.clock - a.clock))
+
+  const toggle = (id: typeof mode, label: string) => (
+    <button onClick={() => setMode(id)} style={{ ...ghost, padding: '0.25rem 0.7rem', fontSize: '0.85rem', borderColor: mode === id ? '#2f6f4f' : '#333' }}>{label}</button>
+  )
+
+  return (
+    <section style={card}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.75rem' }}>
+        <h2 style={{ fontSize: '1rem', margin: 0 }}>Overview</h2>
+        <div style={{ display: 'flex', gap: '0.35rem' }}>{toggle('errors', 'Errors')}{toggle('both', 'Errors + Warnings')}</div>
+      </div>
+      {error && <p style={{ color: 'crimson' }}>{error}</p>}
+      {rows === null && !error && <p style={{ color: '#888' }}>Loading…</p>}
+      {rows !== null && filtered.length === 0 && (
+        <p style={{ color: 'seagreen' }}>✓ All clear — nothing {mode === 'errors' ? 'in error' : 'to report'}.</p>
+      )}
+      <div style={{ display: 'grid', gap: '0.4rem' }}>
+        {filtered.map((p) => (
+          <div key={p.event_id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.5rem 0.7rem', border: '1px solid #2a2a2a', borderLeft: `3px solid ${stateColor[p.state] || '#777'}`, borderRadius: 6, opacity: p.acknowledged ? 0.65 : 1 }}>
+            <span style={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0, background: stateColor[p.state] || '#777' }} />
+            <span style={{ minWidth: 0 }}>
+              <strong>{p.host_name}</strong>
+              <span style={{ color: '#bbb' }}> · {p.name}</span>
+            </span>
+            <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
+              <span style={{ color: '#888', fontSize: '0.85rem' }}>{relTime(p.clock)}</span>
+              {p.acknowledged
+                ? <span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acknowledged</span>
+                : <button onClick={() => ack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Acknowledge</button>}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 

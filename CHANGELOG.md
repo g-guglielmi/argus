@@ -11,6 +11,21 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.22] - 2026-08-12
+
+**Overview dashboard.** The cross-host "what's wrong right now" view — now the default landing.
+
+### Added
+- **Overview** tab: a single list of active problems across all hosts, with an
+  **Errors / Errors + Warnings** toggle. Errors-only hides acknowledged problems; both views
+  exclude problems on hidden or paused hosts (and whose sensors are all hidden).
+- Acknowledge directly from the list; rows sort worst-first, then unacknowledged, then newest,
+  and the view auto-refreshes every 30s. Shows "✓ All clear" when there's nothing to report.
+- Endpoint `GET /api/problems` (`problem.get` across all hosts, joined to host/items via
+  `trigger.get`).
+
+---
+
 ## [0.0.21] - 2026-08-12
 
 ### Fixed

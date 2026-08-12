@@ -248,6 +248,54 @@ func (c *Client) Problems(ctx context.Context, hostID string) ([]Problem, error)
 	return ps, c.call(ctx, "problem.get", params, true, &ps)
 }
 
+// AllProblems returns every active (unresolved) problem across all hosts, newest first.
+func (c *Client) AllProblems(ctx context.Context) ([]Problem, error) {
+	params := map[string]any{
+		"output":    []string{"eventid", "name", "severity", "clock", "acknowledged", "objectid"},
+		"sortfield": []string{"eventid"},
+		"sortorder": "DESC",
+	}
+	var ps []Problem
+	return ps, c.call(ctx, "problem.get", params, true, &ps)
+}
+
+// TriggerTarget is the host(s) and item(s) a trigger references.
+type TriggerTarget struct {
+	Hosts []struct {
+		HostID string `json:"hostid"`
+		Name   string `json:"name"`
+		Status string `json:"status"` // "0" monitored, "1" disabled (paused)
+	} `json:"hosts"`
+	Items []struct {
+		ItemID string `json:"itemid"`
+	} `json:"items"`
+}
+
+// TriggerTargets maps trigger ids to their host(s) and item(s), for the cross-host problem list.
+func (c *Client) TriggerTargets(ctx context.Context, triggerIDs []string) (map[string]TriggerTarget, error) {
+	out := map[string]TriggerTarget{}
+	if len(triggerIDs) == 0 {
+		return out, nil
+	}
+	params := map[string]any{
+		"output":      []string{"triggerid"},
+		"selectHosts": []string{"hostid", "name", "status"},
+		"selectItems": []string{"itemid"},
+		"triggerids":  triggerIDs,
+	}
+	var ts []struct {
+		TriggerID string `json:"triggerid"`
+		TriggerTarget
+	}
+	if err := c.call(ctx, "trigger.get", params, true, &ts); err != nil {
+		return nil, err
+	}
+	for _, t := range ts {
+		out[t.TriggerID] = t.TriggerTarget
+	}
+	return out, nil
+}
+
 // TriggerItems maps trigger ids to the item ids they reference (for highlighting the sensor).
 func (c *Client) TriggerItems(ctx context.Context, triggerIDs []string) (map[string][]string, error) {
 	out := map[string][]string{}
