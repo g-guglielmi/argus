@@ -34,9 +34,11 @@ type hostView struct {
 	Name     string `json:"name"`
 	Problems int    `json:"problems"`
 	Severity int    `json:"severity"` // -1 when no active problem, else 0..5
-	State    string `json:"state"`    // ok | warning | error
-	Paused   bool   `json:"paused"`   // disabled in Zabbix (stopped collecting)
-	Hidden   bool   `json:"hidden"`   // Argus-side suppression (still collecting)
+	State       string `json:"state"`  // ok | warning | error
+	Paused      bool   `json:"paused"` // disabled in Zabbix (stopped collecting)
+	Hidden      bool   `json:"hidden"` // Argus-side suppression (still collecting)
+	PausedUntil *int64 `json:"paused_until,omitempty"`
+	HiddenUntil *int64 `json:"hidden_until,omitempty"`
 }
 
 type itemView struct {
@@ -48,11 +50,13 @@ type itemView struct {
 	LastClock int64  `json:"last_clock"` // unix seconds, 0 if never
 	Supported bool   `json:"supported"`
 	Enabled   bool   `json:"enabled"`
-	Numeric   bool   `json:"numeric"`            // graphable (value_type float or unsigned)
-	Paused    bool   `json:"paused"`             // disabled in Zabbix (stopped collecting)
-	Hidden    bool   `json:"hidden"`             // Argus-side suppression (still collecting)
-	Category  string `json:"category,omitempty"` // set in curated mode
-	Label     string `json:"label,omitempty"`    // friendly name in curated mode
+	Numeric     bool   `json:"numeric"` // graphable (value_type float or unsigned)
+	Paused      bool   `json:"paused"`  // disabled in Zabbix (stopped collecting)
+	Hidden      bool   `json:"hidden"`  // Argus-side suppression (still collecting)
+	PausedUntil *int64 `json:"paused_until,omitempty"`
+	HiddenUntil *int64 `json:"hidden_until,omitempty"`
+	Category    string `json:"category,omitempty"` // set in curated mode
+	Label       string `json:"label,omitempty"`    // friendly name in curated mode
 }
 
 // numericValueType reports whether a Zabbix value_type is graphable (0 float, 3 unsigned).
@@ -102,7 +106,8 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	hidden, _ := s.st.ActiveSuppressions(ctx, "hide", "host")
+	hideMap, _ := s.st.ActiveSuppressionMap(ctx, "hide", "host")
+	pauseMap, _ := s.st.ActiveSuppressionMap(ctx, "pause", "host")
 
 	out := make([]hostView, 0, len(hosts))
 	for _, h := range hosts {
@@ -112,8 +117,14 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 			hv.Severity = worst[h.HostID]
 			hv.State = severityState(worst[h.HostID])
 		}
-		hv.Paused = h.Status == "1" // disabled in Zabbix
-		hv.Hidden = hidden[h.HostID]
+		if h.Status == "1" { // disabled in Zabbix
+			hv.Paused = true
+			hv.PausedUntil = pauseMap[h.HostID]
+		}
+		if u, ok := hideMap[h.HostID]; ok {
+			hv.Hidden = true
+			hv.HiddenUntil = u
+		}
 		out = append(out, hv)
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -125,6 +136,7 @@ type problemView struct {
 	Severity     int      `json:"severity"`
 	State        string   `json:"state"`
 	Acknowledged bool     `json:"acknowledged"`
+	AckUntil     *int64   `json:"ack_until,omitempty"`
 	ItemIDs      []string `json:"item_ids"`
 }
 
@@ -147,7 +159,7 @@ func (s *Server) handleHostProblems(w http.ResponseWriter, r *http.Request) {
 		tids = append(tids, p.ObjectID)
 	}
 	itemsByTrigger, _ := s.zbx.TriggerItems(ctx, tids)
-	acked, _ := s.st.ActiveSuppressions(ctx, "ack", "event") // Argus is the ack source of truth
+	acked, _ := s.st.ActiveSuppressionMap(ctx, "ack", "event") // Argus is the ack source of truth
 
 	out := make([]problemView, 0, len(problems))
 	for _, p := range problems {
@@ -156,14 +168,18 @@ func (s *Server) handleHostProblems(w http.ResponseWriter, r *http.Request) {
 		if ids == nil {
 			ids = []string{}
 		}
-		out = append(out, problemView{
-			EventID:      p.EventID,
-			Name:         p.Name,
-			Severity:     sev,
-			State:        severityState(sev),
-			Acknowledged: acked[p.EventID],
-			ItemIDs:      ids,
-		})
+		pv := problemView{
+			EventID:  p.EventID,
+			Name:     p.Name,
+			Severity: sev,
+			State:    severityState(sev),
+			ItemIDs:  ids,
+		}
+		if u, ok := acked[p.EventID]; ok {
+			pv.Acknowledged = true
+			pv.AckUntil = u
+		}
+		out = append(out, pv)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -293,7 +309,8 @@ func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	all := r.URL.Query().Get("all") == "1"
-	hiddenItems, _ := s.st.ActiveSuppressions(ctx, "hide", "item")
+	hideMap, _ := s.st.ActiveSuppressionMap(ctx, "hide", "item")
+	pauseMap, _ := s.st.ActiveSuppressionMap(ctx, "pause", "item")
 	out := make([]itemView, 0, len(items))
 	for _, it := range items {
 		var clock int64
@@ -310,7 +327,13 @@ func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 			Supported: it.State == "0",
 			Numeric:   numericValueType(it.ValueType),
 			Paused:    it.Status == "1", // disabled in Zabbix
-			Hidden:    hiddenItems[it.ItemID],
+		}
+		if iv.Paused {
+			iv.PausedUntil = pauseMap[it.ItemID]
+		}
+		if u, ok := hideMap[it.ItemID]; ok {
+			iv.Hidden = true
+			iv.HiddenUntil = u
 		}
 		if !all {
 			cat, label, ok := classifyItem(it.Key, it.Name)

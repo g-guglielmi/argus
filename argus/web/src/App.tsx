@@ -7,10 +7,10 @@ type Me = { email: string; name: string; surname: string; role: string; mfa_enab
 type User = { id: number; email: string; name: string; surname: string; role: string; mfa_enabled?: boolean; passkeys?: number }
 type Health = { status: string; zabbix: { reachable: boolean; version?: string; error?: string } }
 type Passkey = { id: string; name: string; created: string; last_used: string | null }
-type Host = { id: string; name: string; problems: number; severity: number; state: string; paused: boolean; hidden: boolean }
-type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; numeric: boolean; paused: boolean; hidden: boolean; category?: string; label?: string }
-type Problem = { event_id: string; name: string; severity: number; state: string; acknowledged: boolean; item_ids: string[] }
-type ProblemRow = { event_id: string; name: string; host_id: string; host_name: string; severity: number; state: string; acknowledged: boolean; clock: number }
+type Host = { id: string; name: string; problems: number; severity: number; state: string; paused: boolean; hidden: boolean; paused_until?: number; hidden_until?: number }
+type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; numeric: boolean; paused: boolean; hidden: boolean; paused_until?: number; hidden_until?: number; category?: string; label?: string }
+type Problem = { event_id: string; name: string; severity: number; state: string; acknowledged: boolean; ack_until?: number; item_ids: string[] }
+type ProblemRow = { event_id: string; name: string; host_id: string; host_name: string; severity: number; state: string; acknowledged: boolean; ack_until?: number; clock: number }
 type SeriesPoint = { t: number; v?: number; min?: number; avg?: number; max?: number }
 type Series = { name: string; units: string; kind: 'history' | 'trend'; points: SeriesPoint[] }
 
@@ -92,6 +92,12 @@ function DurationButton({ label, onPick, disabled, borderColor }: { label: strin
       )}
     </span>
   )
+}
+
+// untilLabel formats a suppression expiry: "until Aug 12, 14:30", or "no expiry" when absent.
+function untilLabel(u?: number): string {
+  if (!u) return 'no expiry'
+  return `until ${new Date(u * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
 }
 
 function relTime(unix: number): string {
@@ -399,7 +405,7 @@ function OverviewView() {
             <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.6rem', flexShrink: 0 }}>
               <span style={{ color: '#888', fontSize: '0.85rem' }}>{relTime(p.clock)}</span>
               {p.acknowledged
-                ? <><span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acknowledged</span><button onClick={() => unack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Unacknowledge</button></>
+                ? <><span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acked · {untilLabel(p.ack_until)}</span><button onClick={() => unack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Unacknowledge</button></>
                 : <DurationButton label="Acknowledge" onPick={(s) => ack(p, s)} />}
             </span>
           </div>
@@ -445,7 +451,7 @@ function MonitoringView({ role }: { role: string }) {
       .catch(() => setError('Failed to load hosts'))
       .finally(() => { if (initial) setLoading(false) })
   }
-  useEffect(() => { load(true) }, [])
+  useEffect(() => { load(true); const t = setInterval(() => load(false), 30000); return () => clearInterval(t) }, [])
 
   const [busyId, setBusyId] = useState<string | null>(null)
   async function setState(h: Host, action: 'pause' | 'hide', seconds: number | null) {
@@ -480,8 +486,8 @@ function MonitoringView({ role }: { role: string }) {
             >
               <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: dotColor(h.paused, h.hidden, h.state) }} />
               <span style={{ fontWeight: 600 }}>{h.name}</span>
-              {h.paused && <span style={{ color: PAUSED_BLUE, fontSize: '0.8rem' }}>(paused)</span>}
-              {h.hidden && <span style={{ color: HIDDEN_GREY, fontSize: '0.8rem' }}>(hidden)</span>}
+              {h.paused && <span style={{ color: PAUSED_BLUE, fontSize: '0.8rem' }}>(paused · {untilLabel(h.paused_until)})</span>}
+              {h.hidden && <span style={{ color: HIDDEN_GREY, fontSize: '0.8rem' }}>(hidden · {untilLabel(h.hidden_until)})</span>}
               <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 {!h.paused && !h.hidden && h.problems > 0 && (
                   <span style={{ color: stateColor[h.state] || '#aaa', fontSize: '0.85rem', marginRight: '0.25rem' }}>
@@ -543,6 +549,8 @@ function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: strin
     fetch(`/api/hosts/${hostId}/problems`).then((r) => (r.ok ? r.json() : [])).then((p) => setProblems(p || [])).catch(() => {})
   }
   useEffect(() => { loadProblems() }, [hostId])
+  // Keep the expanded host's values, last-check times and problems fresh.
+  useEffect(() => { const t = setInterval(() => { loadItems(false); loadProblems() }, 30000); return () => clearInterval(t) }, [hostId, showAll])
 
   async function ack(p: Problem, seconds: number | null) {
     await fetch(`/api/events/${p.event_id}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ duration_seconds: seconds ?? 0 }) }).catch(() => {})
@@ -579,7 +587,7 @@ function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: strin
               <span style={{ opacity: p.acknowledged ? 0.7 : 1 }}>{p.name}</span>
               <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 {p.acknowledged
-                  ? <><span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acknowledged</span><button onClick={() => unack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Unacknowledge</button></>
+                  ? <><span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acked · {untilLabel(p.ack_until)}</span><button onClick={() => unack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Unacknowledge</button></>
                   : <DurationButton label="Acknowledge" onPick={(s) => ack(p, s)} />}
               </span>
             </div>
@@ -639,8 +647,8 @@ function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: strin
                             {clickable && <span style={{ color: '#6a6', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>}
                             <span style={{ opacity: effPaused || effHidden ? 0.55 : 1 }}>
                               {label}
-                              {effPaused && <span style={{ color: PAUSED_BLUE, fontSize: '0.78rem' }}> (paused{hostPaused && !it.paused ? ' · host' : ''})</span>}
-                              {effHidden && <span style={{ color: HIDDEN_GREY, fontSize: '0.78rem' }}> (hidden{hostHidden && !it.hidden ? ' · host' : ''})</span>}
+                              {effPaused && <span style={{ color: PAUSED_BLUE, fontSize: '0.78rem' }}> (paused · {hostPaused && !it.paused ? 'host' : untilLabel(it.paused_until)})</span>}
+                              {effHidden && <span style={{ color: HIDDEN_GREY, fontSize: '0.78rem' }}> (hidden · {hostHidden && !it.hidden ? 'host' : untilLabel(it.hidden_until)})</span>}
                             </span>
                           </div>
                         </td>
@@ -760,19 +768,27 @@ function SensorChart({ itemId, units }: { itemId: string; units: string }) {
   const [data, setData] = useState<Series | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [tick, setTick] = useState(0)
   const host = useRef<HTMLDivElement>(null)
   const plot = useRef<uPlot | null>(null)
+  const lastKey = useRef('')
+
+  // Refresh the open chart periodically so it stays live.
+  useEffect(() => { const t = setInterval(() => setTick((x) => x + 1), 60000); return () => clearInterval(t) }, [])
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true); setError(null)
+    // Show the loading state on an item/range change, but not on background refreshes.
+    const key = `${itemId}|${range}`
+    if (lastKey.current !== key) { setLoading(true); lastKey.current = key }
+    setError(null)
     fetch(`/api/items/${itemId}/history?range=${range}`)
       .then(async (r) => { if (!r.ok) throw new Error(await errText(r, 'Failed to load history')); return r.json() })
       .then((d: Series) => { if (!cancelled) setData(d) })
       .catch((e) => { if (!cancelled) { setError(e.message || 'Failed to load history'); setData(null) } })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [itemId, range])
+  }, [itemId, range, tick])
 
   useEffect(() => {
     if (plot.current) { plot.current.destroy(); plot.current = null }

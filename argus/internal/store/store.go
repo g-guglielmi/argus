@@ -367,22 +367,28 @@ func (s *Store) ClearSuppression(ctx context.Context, kind, scope, targetID stri
 	return err
 }
 
-// ActiveSuppressions returns the set of non-expired target ids for a kind+scope.
-func (s *Store) ActiveSuppressions(ctx context.Context, kind, scope string) (map[string]bool, error) {
+// ActiveSuppressionMap returns non-expired target ids mapped to their expiry (nil = indefinite).
+func (s *Store) ActiveSuppressionMap(ctx context.Context, kind, scope string) (map[string]*int64, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT target_id FROM suppressions WHERE kind=? AND scope=? AND (until IS NULL OR until > ?)`,
+		`SELECT target_id, until FROM suppressions WHERE kind=? AND scope=? AND (until IS NULL OR until > ?)`,
 		kind, scope, time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]bool{}
+	out := map[string]*int64{}
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		var until sql.NullInt64
+		if err := rows.Scan(&id, &until); err != nil {
 			return nil, err
 		}
-		out[id] = true
+		if until.Valid {
+			v := until.Int64
+			out[id] = &v
+		} else {
+			out[id] = nil
+		}
 	}
 	return out, rows.Err()
 }

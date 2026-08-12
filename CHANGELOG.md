@@ -11,6 +11,21 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.25] - 2026-08-12
+
+### Added
+- **"Suppressed until" labels**: paused, hidden, and acknowledged items now show when they'll
+  clear (e.g. "paused · until Aug 12, 14:30", or "no expiry" when indefinite) in the host list,
+  sensor rows, the host problem panel, and the Overview.
+- **Auto-refresh for the Monitoring view and graphs**: the host list, the expanded sensor
+  values/last-check/problems (30s), and open charts (60s) now update on their own — matching
+  the Overview, which already refreshed. Background refreshes don't flash a loading state.
+
+### Internal
+- Suppression reads return the expiry (`ActiveSuppressionMap`); views carry `*_until` fields.
+
+---
+
 ## [0.0.24] - 2026-08-12
 
 ### Changed
