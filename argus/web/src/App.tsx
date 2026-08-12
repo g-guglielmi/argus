@@ -528,6 +528,29 @@ function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: strin
 
 const GREEN = '#4fa06f'
 
+// insertGaps breaks the line where sampling stopped (e.g. a paused sensor): where the time
+// between two consecutive points exceeds ~1.75x the typical interval, it inserts a null so
+// uPlot draws a gap instead of a straight line across the missing period.
+function insertGaps(xs: number[], series: (number | null)[][]): [number[], (number | null)[][]] {
+  if (xs.length < 3) return [xs, series]
+  const deltas: number[] = []
+  for (let i = 1; i < xs.length; i++) deltas.push(xs[i] - xs[i - 1])
+  const median = [...deltas].sort((a, b) => a - b)[Math.floor(deltas.length / 2)] || 0
+  if (median <= 0) return [xs, series]
+  const threshold = median * 1.75
+  const nx: number[] = []
+  const ns: (number | null)[][] = series.map(() => [])
+  for (let i = 0; i < xs.length; i++) {
+    if (i > 0 && xs[i] - xs[i - 1] > threshold) {
+      nx.push(xs[i - 1] + median)
+      ns.forEach((s) => s.push(null))
+    }
+    nx.push(xs[i])
+    series.forEach((s, si) => ns[si].push(s[i]))
+  }
+  return [nx, ns]
+}
+
 function buildPlot(data: Series, units: string, width: number): [uPlot.Options, uPlot.AlignedData] {
   const xs = data.points.map((p) => p.t)
   const axisStroke = '#8a8a8a'
@@ -562,7 +585,8 @@ function buildPlot(data: Series, units: string, width: number): [uPlot.Options, 
       ],
       bands: [{ series: [3, 2], fill: 'rgba(79,160,111,0.12)' }],
     } as uPlot.Options
-    return [opts, [xs, avg, min, max] as uPlot.AlignedData]
+    const [gx, [ga, gmin, gmax]] = insertGaps(xs, [avg, min, max])
+    return [opts, [gx, ga, gmin, gmax] as uPlot.AlignedData]
   }
 
   const vs = data.points.map((p) => (p.v ?? null))
@@ -570,7 +594,8 @@ function buildPlot(data: Series, units: string, width: number): [uPlot.Options, 
     ...base,
     series: [{ value: xVal }, { label: `value${unitLabel}`, stroke: GREEN, width: 1.5, fill: 'rgba(79,160,111,0.10)', value: yVal(1) }],
   } as uPlot.Options
-  return [opts, [xs, vs] as uPlot.AlignedData]
+  const [gx, [gv]] = insertGaps(xs, [vs])
+  return [opts, [gx, gv] as uPlot.AlignedData]
 }
 
 function SensorChart({ itemId, units }: { itemId: string; units: string }) {

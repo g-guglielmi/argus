@@ -11,6 +11,15 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.21] - 2026-08-12
+
+### Fixed
+- **Graphs now show a gap when data is missing** (e.g. a paused sensor) instead of drawing a
+  straight line across the empty period. Where the interval between two points exceeds ~1.75x
+  the typical sampling interval, the line breaks.
+
+---
+
 ## [0.0.20] - 2026-08-12
 
 ### Changed
