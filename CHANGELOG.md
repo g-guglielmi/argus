@@ -11,6 +11,15 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.18] - 2026-08-12
+
+### Changed
+- **Pause/Resume buttons are aligned** to the right edge for both hosts and sensors, so they
+  sit in a consistent vertical column and are easy to find. The per-sensor button moved from
+  the sensor-name cell to the right of its "last check" time.
+
+---
+
 ## [0.0.17] - 2026-08-12
 
 ### Added

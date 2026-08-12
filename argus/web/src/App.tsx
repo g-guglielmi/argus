@@ -432,9 +432,9 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
           <div style={{ border: '1px solid #262626', borderRadius: 6, overflow: 'hidden' }}>
             <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
               <colgroup>
-                <col style={{ width: '32%' }} />
+                <col style={{ width: '30%' }} />
                 <col />
-                <col style={{ width: '110px' }} />
+                <col style={{ width: '180px' }} />
               </colgroup>
               <thead>
                 <tr style={{ textAlign: 'left', color: '#aaa' }}>
@@ -470,14 +470,6 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                             {clickable && <span style={{ color: '#6a6', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>}
                             <span style={{ opacity: it.paused ? 0.55 : 1 }}>{label}{it.paused && <span style={{ color: '#999', fontSize: '0.8rem' }}> (paused)</span>}</span>
-                            {canPause && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); togglePauseItem(it) }}
-                                style={{ ...ghost, marginLeft: 'auto', padding: '0.1rem 0.45rem', fontSize: '0.75rem' }}
-                              >
-                                {it.paused ? 'Resume' : 'Pause'}
-                              </button>
-                            )}
                           </div>
                         </td>
                         <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
@@ -485,7 +477,19 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
                             ? (() => { const [dv, du] = readingParts(it.last_value, it.units); return <span><strong>{dv}</strong>{du ? ` ${du}` : ''}</span> })()
                             : <span style={{ color: '#c66' }}>not supported</span>}
                         </td>
-                        <td style={{ padding: '0.4rem 0.6rem', color: '#999', whiteSpace: 'nowrap' }}>{relTime(it.last_clock)}</td>
+                        <td style={{ padding: '0.4rem 0.6rem', whiteSpace: 'nowrap' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.6rem' }}>
+                            <span style={{ color: '#999' }}>{relTime(it.last_clock)}</span>
+                            {canPause && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); togglePauseItem(it) }}
+                                style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem' }}
+                              >
+                                {it.paused ? 'Resume' : 'Pause'}
+                              </button>
+                            )}
+                          </div>
+                        </td>
                       </tr>
                       {open && clickable && (
                         <tr>
