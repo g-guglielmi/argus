@@ -11,6 +11,27 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.19] - 2026-08-12
+
+**Two distinct suppression actions: Pause and Hide.** Hosts and sensors each get both.
+
+### Added / Changed
+- **Pause** (blue) = PRTG-style stop: disables the host/item **in Zabbix**, so collection
+  actually stops (a gap in the graph while paused). Resuming re-enables it. Requires the API
+  token to have **write** permission — a read-only token returns a clear error.
+- **Hide** (grey) = Argus-side suppression: keeps collecting but mutes alerting/surfacing.
+  Instant, reversible, no extra Zabbix permissions.
+- Both available for **hosts and individual sensors** (Helpdesk + Admin). Paused/hidden rows
+  are dimmed and marked, with a blue or grey status dot.
+- Endpoints: `POST`/`DELETE /api/{hosts,items}/{id}/pause` (Zabbix enable/disable) and
+  `.../hide` (Argus). A host/item disabled directly in Zabbix now shows as **Paused** in Argus.
+
+### Internal
+- The Argus suppression store/table was renamed from `pauses` to `hidden` to match the new
+  naming; the old `pauses` rows (test data) are not migrated.
+
+---
+
 ## [0.0.18] - 2026-08-12
 
 ### Changed

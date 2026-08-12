@@ -7,8 +7,8 @@ type Me = { email: string; name: string; surname: string; role: string; mfa_enab
 type User = { id: number; email: string; name: string; surname: string; role: string; mfa_enabled?: boolean; passkeys?: number }
 type Health = { status: string; zabbix: { reachable: boolean; version?: string; error?: string } }
 type Passkey = { id: string; name: string; created: string; last_used: string | null }
-type Host = { id: string; name: string; enabled: boolean; problems: number; severity: number; state: string; paused: boolean }
-type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean; numeric: boolean; paused: boolean; category?: string; label?: string }
+type Host = { id: string; name: string; problems: number; severity: number; state: string; paused: boolean; hidden: boolean }
+type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; numeric: boolean; paused: boolean; hidden: boolean; category?: string; label?: string }
 type Problem = { event_id: string; name: string; severity: number; state: string; acknowledged: boolean; item_ids: string[] }
 type SeriesPoint = { t: number; v?: number; min?: number; avg?: number; max?: number }
 type Series = { name: string; units: string; kind: 'history' | 'trend'; points: SeriesPoint[] }
@@ -17,6 +17,15 @@ const RANGES = ['2h', '2d', '1M', '3M', '6M', '1Y']
 
 const stateColor: Record<string, string> = { ok: 'seagreen', warning: '#d9a441', error: 'crimson' }
 const stateRank: Record<string, number> = { ok: 0, warning: 1, error: 2 }
+const PAUSED_BLUE = '#4a86c5'
+const HIDDEN_GREY = '#888'
+
+// dotColor: paused (blue) and hidden (grey) override the health colour.
+function dotColor(paused: boolean, hidden: boolean, state: string): string {
+  if (paused) return PAUSED_BLUE
+  if (hidden) return HIDDEN_GREY
+  return stateColor[state] || '#777'
+}
 
 function relTime(unix: number): string {
   if (!unix) return 'never'
@@ -308,14 +317,15 @@ function MonitoringView({ role }: { role: string }) {
   }
   useEffect(() => { load(true) }, [])
 
-  async function togglePause(h: Host) {
-    const method = h.paused ? 'DELETE' : 'POST'
-    await fetch(`/api/hosts/${h.id}/pause`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'POST' ? JSON.stringify({}) : undefined }).catch(() => {})
+  const [busyId, setBusyId] = useState<string | null>(null)
+  async function toggle(h: Host, action: 'pause' | 'hide') {
+    const active = action === 'pause' ? h.paused : h.hidden
+    setBusyId(h.id)
+    const res = await fetch(`/api/hosts/${h.id}/${action}`, { method: active ? 'DELETE' : 'POST', headers: { 'Content-Type': 'application/json' }, body: active ? undefined : JSON.stringify({}) }).catch(() => null)
+    setBusyId(null)
+    if (res && !res.ok) { setError(await errText(res, `Could not ${action} host`)); return }
     load()
   }
-
-  // A paused host is grey; otherwise its state colour, or grey when Zabbix-disabled.
-  const dotColor = (h: Host) => (h.paused ? '#888' : h.enabled ? (stateColor[h.state] || '#777') : '#555')
 
   return (
     <section style={card}>
@@ -330,25 +340,23 @@ function MonitoringView({ role }: { role: string }) {
               role="button"
               tabIndex={0}
               onClick={() => setOpenId(openId === h.id ? null : h.id)}
-              style={{ ...ghost, width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', textAlign: 'left', cursor: 'pointer', boxSizing: 'border-box', opacity: h.paused ? 0.7 : 1, borderColor: openId === h.id ? '#2f6f4f' : '#333' }}
+              style={{ ...ghost, width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', textAlign: 'left', cursor: 'pointer', boxSizing: 'border-box', opacity: h.paused || h.hidden ? 0.7 : 1, borderColor: openId === h.id ? '#2f6f4f' : '#333' }}
             >
-              <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: dotColor(h) }} />
+              <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: dotColor(h.paused, h.hidden, h.state) }} />
               <span style={{ fontWeight: 600 }}>{h.name}</span>
-              {h.paused && <span style={{ color: '#999', fontSize: '0.8rem' }}>(paused)</span>}
-              {!h.enabled && <span style={{ color: '#777', fontSize: '0.8rem' }}>(disabled)</span>}
-              <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                {!h.paused && h.problems > 0 && (
-                  <span style={{ color: stateColor[h.state] || '#aaa', fontSize: '0.85rem' }}>
+              {h.paused && <span style={{ color: PAUSED_BLUE, fontSize: '0.8rem' }}>(paused)</span>}
+              {h.hidden && <span style={{ color: HIDDEN_GREY, fontSize: '0.8rem' }}>(hidden)</span>}
+              <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {!h.paused && !h.hidden && h.problems > 0 && (
+                  <span style={{ color: stateColor[h.state] || '#aaa', fontSize: '0.85rem', marginRight: '0.25rem' }}>
                     {h.problems} problem{h.problems === 1 ? '' : 's'}
                   </span>
                 )}
                 {canPause && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); togglePause(h) }}
-                    style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}
-                  >
-                    {h.paused ? 'Resume' : 'Pause'}
-                  </button>
+                  <>
+                    <button onClick={(e) => { e.stopPropagation(); toggle(h, 'pause') }} disabled={busyId === h.id} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem', borderColor: h.paused ? PAUSED_BLUE : '#333' }}>{h.paused ? 'Resume' : 'Pause'}</button>
+                    <button onClick={(e) => { e.stopPropagation(); toggle(h, 'hide') }} disabled={busyId === h.id} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>{h.hidden ? 'Show' : 'Hide'}</button>
+                  </>
                 )}
               </span>
             </div>
@@ -377,9 +385,12 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
   }
   useEffect(() => { loadItems() }, [hostId, showAll])
 
-  async function togglePauseItem(it: SensorItem) {
-    const method = it.paused ? 'DELETE' : 'POST'
-    await fetch(`/api/items/${it.id}/pause`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'POST' ? JSON.stringify({}) : undefined }).catch(() => {})
+  const [busyItem, setBusyItem] = useState<string | null>(null)
+  async function toggleItem(it: SensorItem, action: 'pause' | 'hide') {
+    const active = action === 'pause' ? it.paused : it.hidden
+    setBusyItem(it.id)
+    await fetch(`/api/items/${it.id}/${action}`, { method: active ? 'DELETE' : 'POST', headers: { 'Content-Type': 'application/json' }, body: active ? undefined : JSON.stringify({}) }).catch(() => {})
+    setBusyItem(null)
     loadItems(false)
   }
 
@@ -432,9 +443,9 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
           <div style={{ border: '1px solid #262626', borderRadius: 6, overflow: 'hidden' }}>
             <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
               <colgroup>
-                <col style={{ width: '30%' }} />
+                <col style={{ width: '28%' }} />
                 <col />
-                <col style={{ width: '180px' }} />
+                <col style={{ width: '250px' }} />
               </colgroup>
               <thead>
                 <tr style={{ textAlign: 'left', color: '#aaa' }}>
@@ -469,7 +480,11 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
                         <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word', borderLeft: `3px solid ${st ? stateColor[st] : 'transparent'}` }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                             {clickable && <span style={{ color: '#6a6', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>}
-                            <span style={{ opacity: it.paused ? 0.55 : 1 }}>{label}{it.paused && <span style={{ color: '#999', fontSize: '0.8rem' }}> (paused)</span>}</span>
+                            <span style={{ opacity: it.paused || it.hidden ? 0.55 : 1 }}>
+                              {label}
+                              {it.paused && <span style={{ color: PAUSED_BLUE, fontSize: '0.78rem' }}> (paused)</span>}
+                              {it.hidden && <span style={{ color: HIDDEN_GREY, fontSize: '0.78rem' }}> (hidden)</span>}
+                            </span>
                           </div>
                         </td>
                         <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word' }}>
@@ -478,15 +493,13 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
                             : <span style={{ color: '#c66' }}>not supported</span>}
                         </td>
                         <td style={{ padding: '0.4rem 0.6rem', whiteSpace: 'nowrap' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.6rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.5rem' }}>
                             <span style={{ color: '#999' }}>{relTime(it.last_clock)}</span>
                             {canPause && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); togglePauseItem(it) }}
-                                style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem' }}
-                              >
-                                {it.paused ? 'Resume' : 'Pause'}
-                              </button>
+                              <>
+                                <button onClick={(e) => { e.stopPropagation(); toggleItem(it, 'pause') }} disabled={busyItem === it.id} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', borderColor: it.paused ? PAUSED_BLUE : '#333' }}>{it.paused ? 'Resume' : 'Pause'}</button>
+                                <button onClick={(e) => { e.stopPropagation(); toggleItem(it, 'hide') }} disabled={busyItem === it.id} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem' }}>{it.hidden ? 'Show' : 'Hide'}</button>
+                              </>
                             )}
                           </div>
                         </td>

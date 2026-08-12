@@ -112,13 +112,14 @@ CREATE TABLE IF NOT EXISTS webauthn_sessions (
   expires_at INTEGER NOT NULL
 );
 
--- Argus-side pause state (host or item), suppressing alerting/error surfacing.
-CREATE TABLE IF NOT EXISTS pauses (
+-- Argus-side "hidden" state (host or item): suppress alerting/surfacing but keep collecting.
+-- (The PRTG-style "pause" that stops collection is handled by disabling the item/host in Zabbix.)
+CREATE TABLE IF NOT EXISTS hidden (
   scope     TEXT NOT NULL,        -- 'host' | 'item'
   target_id TEXT NOT NULL,
   by_user   INTEGER,
   note      TEXT NOT NULL DEFAULT '',
-  paused_at INTEGER NOT NULL,
+  hidden_at INTEGER NOT NULL,
   PRIMARY KEY (scope, target_id)
 );
 `); err != nil {
@@ -336,24 +337,24 @@ func (s *Store) DeleteMFAChallenge(ctx context.Context, id string) error {
 	return err
 }
 
-// --- pauses ---
+// --- hidden (Argus-side suppression) ---
 
-func (s *Store) SetPause(ctx context.Context, scope, targetID string, byUser int64, note string) error {
+func (s *Store) SetHidden(ctx context.Context, scope, targetID string, byUser int64, note string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO pauses(scope,target_id,by_user,note,paused_at) VALUES(?,?,?,?,?)
-		 ON CONFLICT(scope,target_id) DO UPDATE SET by_user=excluded.by_user, note=excluded.note, paused_at=excluded.paused_at`,
+		`INSERT INTO hidden(scope,target_id,by_user,note,hidden_at) VALUES(?,?,?,?,?)
+		 ON CONFLICT(scope,target_id) DO UPDATE SET by_user=excluded.by_user, note=excluded.note, hidden_at=excluded.hidden_at`,
 		scope, targetID, byUser, note, time.Now().Unix())
 	return err
 }
 
-func (s *Store) ClearPause(ctx context.Context, scope, targetID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM pauses WHERE scope=? AND target_id=?`, scope, targetID)
+func (s *Store) ClearHidden(ctx context.Context, scope, targetID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM hidden WHERE scope=? AND target_id=?`, scope, targetID)
 	return err
 }
 
-// PausedSet returns the set of paused target ids for a scope.
-func (s *Store) PausedSet(ctx context.Context, scope string) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT target_id FROM pauses WHERE scope=?`, scope)
+// HiddenSet returns the set of hidden target ids for a scope.
+func (s *Store) HiddenSet(ctx context.Context, scope string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT target_id FROM hidden WHERE scope=?`, scope)
 	if err != nil {
 		return nil, err
 	}

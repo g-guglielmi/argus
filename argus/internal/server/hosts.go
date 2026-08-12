@@ -32,11 +32,11 @@ func severityState(sev int) string {
 type hostView struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
-	Enabled  bool   `json:"enabled"`
 	Problems int    `json:"problems"`
 	Severity int    `json:"severity"` // -1 when no active problem, else 0..5
-	State    string `json:"state"`    // ok | warning | error | paused
-	Paused   bool   `json:"paused"`
+	State    string `json:"state"`    // ok | warning | error
+	Paused   bool   `json:"paused"`   // disabled in Zabbix (stopped collecting)
+	Hidden   bool   `json:"hidden"`   // Argus-side suppression (still collecting)
 }
 
 type itemView struct {
@@ -49,7 +49,8 @@ type itemView struct {
 	Supported bool   `json:"supported"`
 	Enabled   bool   `json:"enabled"`
 	Numeric   bool   `json:"numeric"`            // graphable (value_type float or unsigned)
-	Paused    bool   `json:"paused"`
+	Paused    bool   `json:"paused"`             // disabled in Zabbix (stopped collecting)
+	Hidden    bool   `json:"hidden"`             // Argus-side suppression (still collecting)
 	Category  string `json:"category,omitempty"` // set in curated mode
 	Label     string `json:"label,omitempty"`    // friendly name in curated mode
 }
@@ -91,20 +92,18 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	paused, _ := s.st.PausedSet(ctx, "host")
+	hidden, _ := s.st.HiddenSet(ctx, "host")
 
 	out := make([]hostView, 0, len(hosts))
 	for _, h := range hosts {
-		hv := hostView{ID: h.HostID, Name: h.Name, Enabled: h.Status == "0", Severity: -1, State: "ok"}
+		hv := hostView{ID: h.HostID, Name: h.Name, Severity: -1, State: "ok"}
 		if n := count[h.HostID]; n > 0 {
 			hv.Problems = n
 			hv.Severity = worst[h.HostID]
 			hv.State = severityState(worst[h.HostID])
 		}
-		if paused[h.HostID] {
-			hv.Paused = true
-			hv.State = "paused"
-		}
+		hv.Paused = h.Status == "1" // disabled in Zabbix
+		hv.Hidden = hidden[h.HostID]
 		out = append(out, hv)
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -177,8 +176,8 @@ func (s *Server) handleAckEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// pauseHandler pauses a host or item in Argus (helpdesk/admin), by scope.
-func (s *Server) pauseHandler(scope string) http.HandlerFunc {
+// hideHandler hides (Argus-side suppression) a host or item; collection continues.
+func (s *Server) hideHandler(scope string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Note string `json:"note"`
@@ -189,7 +188,7 @@ func (s *Server) pauseHandler(scope string) http.HandlerFunc {
 		if caller != nil {
 			by = caller.ID
 		}
-		if err := s.st.SetPause(r.Context(), scope, r.PathValue("id"), by, req.Note); err != nil {
+		if err := s.st.SetHidden(r.Context(), scope, r.PathValue("id"), by, req.Note); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			return
 		}
@@ -197,11 +196,37 @@ func (s *Server) pauseHandler(scope string) http.HandlerFunc {
 	}
 }
 
-// unpauseHandler resumes a host or item, by scope.
-func (s *Server) unpauseHandler(scope string) http.HandlerFunc {
+// unhideHandler un-hides a host or item.
+func (s *Server) unhideHandler(scope string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := s.st.ClearPause(r.Context(), scope, r.PathValue("id")); err != nil {
+		if err := s.st.ClearHidden(r.Context(), scope, r.PathValue("id")); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+// zbxEnableHandler pauses (enabled=false) or resumes (enabled=true) a host/item by
+// disabling/enabling it in Zabbix, which actually stops/starts collection.
+func (s *Server) zbxEnableHandler(scope string, enabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.zbx.Authenticated() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Zabbix API token not configured (set ARGUS_ZABBIX_API_TOKEN)"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		id := r.PathValue("id")
+		var err error
+		if scope == "host" {
+			err = s.zbx.SetHostEnabled(ctx, id, enabled)
+		} else {
+			err = s.zbx.SetItemEnabled(ctx, id, enabled)
+		}
+		if err != nil {
+			// Most often a permission error: the token's Zabbix user lacks write access.
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Zabbix: " + err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -222,7 +247,7 @@ func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	all := r.URL.Query().Get("all") == "1"
-	pausedItems, _ := s.st.PausedSet(ctx, "item")
+	hiddenItems, _ := s.st.HiddenSet(ctx, "item")
 	out := make([]itemView, 0, len(items))
 	for _, it := range items {
 		var clock int64
@@ -237,9 +262,9 @@ func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {
 			Units:     it.Units,
 			LastClock: clock,
 			Supported: it.State == "0",
-			Enabled:   it.Status == "0",
 			Numeric:   numericValueType(it.ValueType),
-			Paused:    pausedItems[it.ItemID],
+			Paused:    it.Status == "1", // disabled in Zabbix
+			Hidden:    hiddenItems[it.ItemID],
 		}
 		if !all {
 			cat, label, ok := classifyItem(it.Key, it.Name)

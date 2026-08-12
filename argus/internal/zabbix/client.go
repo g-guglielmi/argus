@@ -276,6 +276,24 @@ func (c *Client) TriggerItems(ctx context.Context, triggerIDs []string) (map[str
 	return out, nil
 }
 
+// SetItemEnabled enables (status 0) or disables (status 1) an item — the "Pause" action.
+func (c *Client) SetItemEnabled(ctx context.Context, itemID string, enabled bool) error {
+	status := 1
+	if enabled {
+		status = 0
+	}
+	return c.call(ctx, "item.update", map[string]any{"itemid": itemID, "status": status}, true, nil)
+}
+
+// SetHostEnabled enables (status 0) or disables (status 1) a host — the "Pause" action.
+func (c *Client) SetHostEnabled(ctx context.Context, hostID string, enabled bool) error {
+	status := 1
+	if enabled {
+		status = 0
+	}
+	return c.call(ctx, "host.update", map[string]any{"hostid": hostID, "status": status}, true, nil)
+}
+
 // AcknowledgeEvent acknowledges a Zabbix problem event, optionally adding a message.
 func (c *Client) AcknowledgeEvent(ctx context.Context, eventID, message string) error {
 	action := 2 // acknowledge
