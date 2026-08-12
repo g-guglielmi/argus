@@ -7,9 +7,9 @@ type Me = { email: string; name: string; surname: string; role: string; mfa_enab
 type User = { id: number; email: string; name: string; surname: string; role: string; mfa_enabled?: boolean; passkeys?: number }
 type Health = { status: string; zabbix: { reachable: boolean; version?: string; error?: string } }
 type Passkey = { id: string; name: string; created: string; last_used: string | null }
-type Host = { id: string; name: string; enabled: boolean; problems: number; severity: number; state: string }
+type Host = { id: string; name: string; enabled: boolean; problems: number; severity: number; state: string; paused: boolean }
 type SensorItem = { id: string; name: string; key: string; last_value: string; units: string; last_clock: number; supported: boolean; enabled: boolean; numeric: boolean; category?: string; label?: string }
-type Problem = { name: string; severity: number; state: string; item_ids: string[] }
+type Problem = { event_id: string; name: string; severity: number; state: string; acknowledged: boolean; item_ids: string[] }
 type SeriesPoint = { t: number; v?: number; min?: number; avg?: number; max?: number }
 type Series = { name: string; units: string; kind: 'history' | 'trend'; points: SeriesPoint[] }
 
@@ -263,7 +263,7 @@ function AppShell({ me, onLogout, passkeysAvailable }: { me: Me; onLogout: () =>
         </div>
       </div>
       {view === 'dashboard' && <DashboardView />}
-      {view === 'monitoring' && <MonitoringView />}
+      {view === 'monitoring' && <MonitoringView role={me.role} />}
       {view === 'users' && me.role === 'admin' && <UsersView />}
       {view === 'account' && <AccountView passkeysAvailable={passkeysAvailable} />}
     </Frame>
@@ -292,18 +292,30 @@ function DashboardView() {
   )
 }
 
-function MonitoringView() {
+function MonitoringView({ role }: { role: string }) {
   const [hosts, setHosts] = useState<Host[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [openId, setOpenId] = useState<string | null>(null)
+  const canPause = role === 'admin' || role === 'helpdesk'
 
-  useEffect(() => {
+  function load(initial = false) {
+    if (initial) setLoading(true)
     fetch('/api/hosts')
-      .then(async (r) => { if (!r.ok) { setError(await errText(r, 'Failed to load hosts')); return } setHosts(await r.json()) })
+      .then(async (r) => { if (!r.ok) { setError(await errText(r, 'Failed to load hosts')); return } setHosts(await r.json()); setError(null) })
       .catch(() => setError('Failed to load hosts'))
-      .finally(() => setLoading(false))
-  }, [])
+      .finally(() => { if (initial) setLoading(false) })
+  }
+  useEffect(() => { load(true) }, [])
+
+  async function togglePause(h: Host) {
+    const method = h.paused ? 'DELETE' : 'POST'
+    await fetch(`/api/hosts/${h.id}/pause`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'POST' ? JSON.stringify({}) : undefined }).catch(() => {})
+    load()
+  }
+
+  // A paused host is grey; otherwise its state colour, or grey when Zabbix-disabled.
+  const dotColor = (h: Host) => (h.paused ? '#888' : h.enabled ? (stateColor[h.state] || '#777') : '#555')
 
   return (
     <section style={card}>
@@ -314,19 +326,32 @@ function MonitoringView() {
       <div style={{ display: 'grid', gap: '0.4rem' }}>
         {hosts.map((h) => (
           <div key={h.id}>
-            <button
+            <div
+              role="button"
+              tabIndex={0}
               onClick={() => setOpenId(openId === h.id ? null : h.id)}
-              style={{ ...ghost, width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', textAlign: 'left', borderColor: openId === h.id ? '#2f6f4f' : '#333' }}
+              style={{ ...ghost, width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', textAlign: 'left', cursor: 'pointer', boxSizing: 'border-box', opacity: h.paused ? 0.7 : 1, borderColor: openId === h.id ? '#2f6f4f' : '#333' }}
             >
-              <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: h.enabled ? (stateColor[h.state] || '#777') : '#555' }} />
+              <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: dotColor(h) }} />
               <span style={{ fontWeight: 600 }}>{h.name}</span>
+              {h.paused && <span style={{ color: '#999', fontSize: '0.8rem' }}>(paused)</span>}
               {!h.enabled && <span style={{ color: '#777', fontSize: '0.8rem' }}>(disabled)</span>}
-              {h.problems > 0 && (
-                <span style={{ marginLeft: 'auto', color: stateColor[h.state] || '#aaa', fontSize: '0.85rem' }}>
-                  {h.problems} problem{h.problems === 1 ? '' : 's'}
-                </span>
-              )}
-            </button>
+              <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                {!h.paused && h.problems > 0 && (
+                  <span style={{ color: stateColor[h.state] || '#aaa', fontSize: '0.85rem' }}>
+                    {h.problems} problem{h.problems === 1 ? '' : 's'}
+                  </span>
+                )}
+                {canPause && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); togglePause(h) }}
+                    style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}
+                  >
+                    {h.paused ? 'Resume' : 'Pause'}
+                  </button>
+                )}
+              </span>
+            </div>
             {openId === h.id && <HostItems hostId={h.id} />}
           </div>
         ))}
@@ -350,9 +375,15 @@ function HostItems({ hostId }: { hostId: string }) {
       .catch(() => setError('Failed to load sensors'))
   }, [hostId, showAll])
 
-  useEffect(() => {
+  function loadProblems() {
     fetch(`/api/hosts/${hostId}/problems`).then((r) => (r.ok ? r.json() : [])).then((p) => setProblems(p || [])).catch(() => {})
-  }, [hostId])
+  }
+  useEffect(() => { loadProblems() }, [hostId])
+
+  async function ack(p: Problem) {
+    await fetch(`/api/events/${p.event_id}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {})
+    loadProblems()
+  }
 
   if (error) return <p style={{ color: 'crimson', margin: '0.4rem 0 0.8rem' }}>{error}</p>
   if (!items) return <p style={{ color: '#888', margin: '0.4rem 0 0.8rem' }}>Loading sensors…</p>
@@ -371,9 +402,14 @@ function HostItems({ hostId }: { hostId: string }) {
         <div style={{ border: '1px solid #4a2a2a', background: '#1e1414', borderRadius: 6, padding: '0.5rem 0.75rem', marginBottom: '0.5rem' }}>
           <div style={{ color: '#c88', fontSize: '0.8rem', marginBottom: '0.25rem' }}>Active problems</div>
           {problems.map((p, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.15rem 0' }}>
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.2rem 0' }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: stateColor[p.state] || '#aaa' }} />
-              <span>{p.name}</span>
+              <span style={{ opacity: p.acknowledged ? 0.7 : 1 }}>{p.name}</span>
+              <span style={{ marginLeft: 'auto' }}>
+                {p.acknowledged
+                  ? <span style={{ color: '#7fb894', fontSize: '0.8rem' }}>✓ acknowledged</span>
+                  : <button onClick={() => ack(p)} style={{ ...ghost, padding: '0.15rem 0.55rem', fontSize: '0.8rem' }}>Acknowledge</button>}
+              </span>
             </div>
           ))}
         </div>

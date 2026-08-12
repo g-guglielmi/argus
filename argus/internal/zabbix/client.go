@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -170,14 +171,6 @@ func (c *Client) ActiveTriggers(ctx context.Context) ([]Trigger, error) {
 	return triggers, c.call(ctx, "trigger.get", params, true, &triggers)
 }
 
-type ProblemTrigger struct {
-	Description string `json:"description"` // the trigger/problem name
-	Priority    string `json:"priority"`    // severity 0..5
-	Items       []struct {
-		ItemID string `json:"itemid"`
-	} `json:"items"`
-}
-
 // Item returns one item's metadata (used before fetching its history/trends).
 func (c *Client) Item(ctx context.Context, itemID string) (*Item, error) {
 	params := map[string]any{
@@ -234,19 +227,63 @@ func (c *Client) Trends(ctx context.Context, itemID string, from, to int64) ([]T
 	return pts, c.call(ctx, "trend.get", params, true, &pts)
 }
 
-// HostProblems returns the active problem triggers on one host, worst first, each with the
-// item(s) it references so the UI can point at the offending sensor.
-func (c *Client) HostProblems(ctx context.Context, hostID string) ([]ProblemTrigger, error) {
+type Problem struct {
+	EventID      string `json:"eventid"`
+	Name         string `json:"name"`
+	Severity     string `json:"severity"`     // 0..5
+	Clock        string `json:"clock"`        // unix seconds
+	Acknowledged string `json:"acknowledged"` // "0" / "1"
+	ObjectID     string `json:"objectid"`     // triggerid
+}
+
+// Problems returns the active (unresolved) problems on one host, newest first.
+func (c *Client) Problems(ctx context.Context, hostID string) ([]Problem, error) {
 	params := map[string]any{
-		"output":        []string{"description", "priority"},
-		"selectItems":   []string{"itemid"},
-		"hostids":       hostID,
-		"filter":        map[string]any{"value": 1},
-		"monitored":     true,
-		"skipDependent": true,
-		"sortfield":     "priority",
-		"sortorder":     "DESC",
+		"output":    []string{"eventid", "name", "severity", "clock", "acknowledged", "objectid"},
+		"hostids":   hostID,
+		"sortfield": []string{"eventid"},
+		"sortorder": "DESC",
 	}
-	var triggers []ProblemTrigger
-	return triggers, c.call(ctx, "trigger.get", params, true, &triggers)
+	var ps []Problem
+	return ps, c.call(ctx, "problem.get", params, true, &ps)
+}
+
+// TriggerItems maps trigger ids to the item ids they reference (for highlighting the sensor).
+func (c *Client) TriggerItems(ctx context.Context, triggerIDs []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	if len(triggerIDs) == 0 {
+		return out, nil
+	}
+	params := map[string]any{
+		"output":      []string{"triggerid"},
+		"selectItems": []string{"itemid"},
+		"triggerids":  triggerIDs,
+	}
+	var ts []struct {
+		TriggerID string `json:"triggerid"`
+		Items     []struct {
+			ItemID string `json:"itemid"`
+		} `json:"items"`
+	}
+	if err := c.call(ctx, "trigger.get", params, true, &ts); err != nil {
+		return nil, err
+	}
+	for _, t := range ts {
+		for _, it := range t.Items {
+			out[t.TriggerID] = append(out[t.TriggerID], it.ItemID)
+		}
+	}
+	return out, nil
+}
+
+// AcknowledgeEvent acknowledges a Zabbix problem event, optionally adding a message.
+func (c *Client) AcknowledgeEvent(ctx context.Context, eventID, message string) error {
+	action := 2 // acknowledge
+	params := map[string]any{"eventids": eventID}
+	if strings.TrimSpace(message) != "" {
+		action |= 4 // add message
+		params["message"] = message
+	}
+	params["action"] = action
+	return c.call(ctx, "event.acknowledge", params, true, nil)
 }

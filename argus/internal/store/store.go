@@ -111,6 +111,16 @@ CREATE TABLE IF NOT EXISTS webauthn_sessions (
   data       TEXT NOT NULL,
   expires_at INTEGER NOT NULL
 );
+
+-- Argus-side pause state (host or item), suppressing alerting/error surfacing.
+CREATE TABLE IF NOT EXISTS pauses (
+  scope     TEXT NOT NULL,        -- 'host' | 'item'
+  target_id TEXT NOT NULL,
+  by_user   INTEGER,
+  note      TEXT NOT NULL DEFAULT '',
+  paused_at INTEGER NOT NULL,
+  PRIMARY KEY (scope, target_id)
+);
 `); err != nil {
 		return err
 	}
@@ -324,6 +334,39 @@ func (s *Store) MFAChallengeUserID(ctx context.Context, id string) (int64, error
 func (s *Store) DeleteMFAChallenge(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM mfa_challenges WHERE id=?`, id)
 	return err
+}
+
+// --- pauses ---
+
+func (s *Store) SetPause(ctx context.Context, scope, targetID string, byUser int64, note string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO pauses(scope,target_id,by_user,note,paused_at) VALUES(?,?,?,?,?)
+		 ON CONFLICT(scope,target_id) DO UPDATE SET by_user=excluded.by_user, note=excluded.note, paused_at=excluded.paused_at`,
+		scope, targetID, byUser, note, time.Now().Unix())
+	return err
+}
+
+func (s *Store) ClearPause(ctx context.Context, scope, targetID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM pauses WHERE scope=? AND target_id=?`, scope, targetID)
+	return err
+}
+
+// PausedSet returns the set of paused target ids for a scope.
+func (s *Store) PausedSet(ctx context.Context, scope string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT target_id FROM pauses WHERE scope=?`, scope)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
 }
 
 // --- passkeys / WebAuthn ---

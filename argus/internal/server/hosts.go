@@ -2,11 +2,19 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strconv"
 	"time"
+
+	"argus/internal/auth"
 )
+
+// decodeOptional decodes a small JSON body if present, ignoring an empty/absent body.
+func decodeOptional(w http.ResponseWriter, r *http.Request, dst any) {
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(dst)
+}
 
 // severityState maps a Zabbix trigger severity (0..5) to Argus's OK/Warning/Error model.
 // info/unclassified -> ok, warning -> warning, average/high/disaster -> error.
@@ -27,7 +35,8 @@ type hostView struct {
 	Enabled  bool   `json:"enabled"`
 	Problems int    `json:"problems"`
 	Severity int    `json:"severity"` // -1 when no active problem, else 0..5
-	State    string `json:"state"`    // ok | warning | error
+	State    string `json:"state"`    // ok | warning | error | paused
+	Paused   bool   `json:"paused"`
 }
 
 type itemView struct {
@@ -81,6 +90,8 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	paused, _ := s.st.PausedSet(ctx, "host")
+
 	out := make([]hostView, 0, len(hosts))
 	for _, h := range hosts {
 		hv := hostView{ID: h.HostID, Name: h.Name, Enabled: h.Status == "0", Severity: -1, State: "ok"}
@@ -89,16 +100,22 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 			hv.Severity = worst[h.HostID]
 			hv.State = severityState(worst[h.HostID])
 		}
+		if paused[h.HostID] {
+			hv.Paused = true
+			hv.State = "paused"
+		}
 		out = append(out, hv)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 type problemView struct {
-	Name     string   `json:"name"`
-	Severity int      `json:"severity"`
-	State    string   `json:"state"`
-	ItemIDs  []string `json:"item_ids"`
+	EventID      string   `json:"event_id"`
+	Name         string   `json:"name"`
+	Severity     int      `json:"severity"`
+	State        string   `json:"state"`
+	Acknowledged bool     `json:"acknowledged"`
+	ItemIDs      []string `json:"item_ids"`
 }
 
 func (s *Server) handleHostProblems(w http.ResponseWriter, r *http.Request) {
@@ -109,21 +126,81 @@ func (s *Server) handleHostProblems(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 
-	triggers, err := s.zbx.HostProblems(ctx, r.PathValue("id"))
+	problems, err := s.zbx.Problems(ctx, r.PathValue("id"))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Zabbix: " + err.Error()})
 		return
 	}
-	out := make([]problemView, 0, len(triggers))
-	for _, t := range triggers {
-		sev := atoi(t.Priority)
-		pv := problemView{Name: t.Description, Severity: sev, State: severityState(sev), ItemIDs: []string{}}
-		for _, it := range t.Items {
-			pv.ItemIDs = append(pv.ItemIDs, it.ItemID)
+	// Best-effort: map each problem's trigger to the item(s) it references for highlighting.
+	tids := make([]string, 0, len(problems))
+	for _, p := range problems {
+		tids = append(tids, p.ObjectID)
+	}
+	itemsByTrigger, _ := s.zbx.TriggerItems(ctx, tids)
+
+	out := make([]problemView, 0, len(problems))
+	for _, p := range problems {
+		sev := atoi(p.Severity)
+		ids := itemsByTrigger[p.ObjectID]
+		if ids == nil {
+			ids = []string{}
 		}
-		out = append(out, pv)
+		out = append(out, problemView{
+			EventID:      p.EventID,
+			Name:         p.Name,
+			Severity:     sev,
+			State:        severityState(sev),
+			Acknowledged: p.Acknowledged == "1",
+			ItemIDs:      ids,
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// POST /api/events/{id}/ack — acknowledge a Zabbix problem (any signed-in user).
+func (s *Server) handleAckEvent(w http.ResponseWriter, r *http.Request) {
+	if !s.zbx.Authenticated() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Zabbix API token not configured (set ARGUS_ZABBIX_API_TOKEN)"})
+		return
+	}
+	var req struct {
+		Message string `json:"message"`
+	}
+	decodeOptional(w, r, &req) // message is optional
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	if err := s.zbx.AcknowledgeEvent(ctx, r.PathValue("id"), req.Message); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Zabbix: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// POST /api/hosts/{id}/pause — pause a host in Argus (helpdesk/admin).
+func (s *Server) handlePauseHost(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Note string `json:"note"`
+	}
+	decodeOptional(w, r, &req)
+	caller, _ := auth.UserFrom(r.Context())
+	var by int64
+	if caller != nil {
+		by = caller.ID
+	}
+	if err := s.st.SetPause(r.Context(), "host", r.PathValue("id"), by, req.Note); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// DELETE /api/hosts/{id}/pause — resume a host (helpdesk/admin).
+func (s *Server) handleUnpauseHost(w http.ResponseWriter, r *http.Request) {
+	if err := s.st.ClearPause(r.Context(), "host", r.PathValue("id")); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleHostItems(w http.ResponseWriter, r *http.Request) {

@@ -68,13 +68,22 @@ func RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 // RequireRole rejects requests unless the authenticated user has the given role.
 func RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {
+	return RequireRoles(next, role)
+}
+
+// RequireRoles rejects requests unless the authenticated user's role is in the allowed set.
+func RequireRoles(next http.HandlerFunc, roles ...string) http.HandlerFunc {
+	allowed := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		allowed[r] = true
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := UserFrom(r.Context())
 		if !ok {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
-		if u.Role != role {
+		if !allowed[u.Role] {
 			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 			return
 		}

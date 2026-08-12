@@ -11,6 +11,29 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.16] - 2026-08-12
+
+**States model — Acknowledge & Pause.** The first of the state controls the dashboards will
+build on.
+
+### Added
+- **Acknowledge** a problem from the Active problems panel — uses Zabbix's native
+  `event.acknowledge`, so it's reflected in Zabbix too; acked problems show a "✓ acknowledged"
+  marker. Available to any signed-in user.
+- **Pause / Resume** a host (Helpdesk + Admin) — an Argus-side flag: paused hosts go grey,
+  hide their problem count, and are marked "(paused)". Zabbix keeps collecting; pausing just
+  suppresses Argus-side surfacing (and, later, alerting). Instant and reversible.
+- Endpoints: `POST /api/events/{id}/ack`, `POST`/`DELETE /api/hosts/{id}/pause`.
+- Problems now carry their Zabbix `event_id` and `acknowledged` state; hosts carry `paused`.
+
+### Notes
+- Acknowledge runs with the **API token's** Zabbix permissions — the token's user needs rights
+  to acknowledge events (a read-only token will get a permission error).
+- Pause is host-level for now; per-sensor pause and the acknowledged/paused dashboards come
+  with the error/warning list views.
+
+---
+
 ## [0.0.15] - 2026-08-12
 
 ### Changed
