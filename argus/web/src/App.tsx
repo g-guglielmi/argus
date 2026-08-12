@@ -360,7 +360,7 @@ function MonitoringView({ role }: { role: string }) {
                 )}
               </span>
             </div>
-            {openId === h.id && <HostItems hostId={h.id} canPause={canPause} />}
+            {openId === h.id && <HostItems hostId={h.id} canPause={canPause} hostPaused={h.paused} hostHidden={h.hidden} />}
           </div>
         ))}
       </div>
@@ -368,7 +368,7 @@ function MonitoringView({ role }: { role: string }) {
   )
 }
 
-function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) {
+function HostItems({ hostId, canPause, hostPaused, hostHidden }: { hostId: string; canPause: boolean; hostPaused: boolean; hostHidden: boolean }) {
   const [items, setItems] = useState<SensorItem[] | null>(null)
   const [problems, setProblems] = useState<Problem[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -460,6 +460,10 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
                   const open = openItem === it.id
                   const clickable = it.numeric && it.supported
                   const label = it.label || it.name
+                  // A sensor inherits its host's paused/hidden state; the individual toggle is
+                  // locked while the host controls it.
+                  const effPaused = it.paused || hostPaused
+                  const effHidden = it.hidden || hostHidden
                   const newGroup = !showAll && it.category && it.category !== items[idx - 1]?.category
                   return (
                     <Fragment key={it.id}>
@@ -480,10 +484,10 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
                         <td style={{ padding: '0.4rem 0.6rem', wordBreak: 'break-word', borderLeft: `3px solid ${st ? stateColor[st] : 'transparent'}` }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                             {clickable && <span style={{ color: '#6a6', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>}
-                            <span style={{ opacity: it.paused || it.hidden ? 0.55 : 1 }}>
+                            <span style={{ opacity: effPaused || effHidden ? 0.55 : 1 }}>
                               {label}
-                              {it.paused && <span style={{ color: PAUSED_BLUE, fontSize: '0.78rem' }}> (paused)</span>}
-                              {it.hidden && <span style={{ color: HIDDEN_GREY, fontSize: '0.78rem' }}> (hidden)</span>}
+                              {effPaused && <span style={{ color: PAUSED_BLUE, fontSize: '0.78rem' }}> (paused{hostPaused && !it.paused ? ' · host' : ''})</span>}
+                              {effHidden && <span style={{ color: HIDDEN_GREY, fontSize: '0.78rem' }}> (hidden{hostHidden && !it.hidden ? ' · host' : ''})</span>}
                             </span>
                           </div>
                         </td>
@@ -497,8 +501,8 @@ function HostItems({ hostId, canPause }: { hostId: string; canPause: boolean }) 
                             <span style={{ color: '#999' }}>{relTime(it.last_clock)}</span>
                             {canPause && (
                               <>
-                                <button onClick={(e) => { e.stopPropagation(); toggleItem(it, 'pause') }} disabled={busyItem === it.id} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', borderColor: it.paused ? PAUSED_BLUE : '#333' }}>{it.paused ? 'Resume' : 'Pause'}</button>
-                                <button onClick={(e) => { e.stopPropagation(); toggleItem(it, 'hide') }} disabled={busyItem === it.id} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem' }}>{it.hidden ? 'Show' : 'Hide'}</button>
+                                <button title={hostPaused ? 'Controlled by the host' : ''} onClick={(e) => { e.stopPropagation(); toggleItem(it, 'pause') }} disabled={busyItem === it.id || hostPaused} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', borderColor: it.paused ? PAUSED_BLUE : '#333', opacity: hostPaused ? 0.4 : 1 }}>{it.paused ? 'Resume' : 'Pause'}</button>
+                                <button title={hostHidden ? 'Controlled by the host' : ''} onClick={(e) => { e.stopPropagation(); toggleItem(it, 'hide') }} disabled={busyItem === it.id || hostHidden} style={{ ...ghost, padding: '0.1rem 0.45rem', fontSize: '0.75rem', opacity: hostHidden ? 0.4 : 1 }}>{it.hidden ? 'Show' : 'Hide'}</button>
                               </>
                             )}
                           </div>

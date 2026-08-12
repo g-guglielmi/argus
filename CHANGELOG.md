@@ -11,6 +11,16 @@ GitHub Release from the matching section below.
 
 ---
 
+## [0.0.20] - 2026-08-12
+
+### Changed
+- **Sensors inherit their host's Pause/Hide state.** When a host is paused or hidden, all its
+  sensors now show as paused/hidden too (marked "· host"), and their individual Pause/Hide
+  toggles are disabled — you can't resume a single sensor while its whole host is paused. This
+  matches how disabling a host in Zabbix actually stops all of its sensors collecting.
+
+---
+
 ## [0.0.19] - 2026-08-12
 
 **Two distinct suppression actions: Pause and Hide.** Hosts and sensors each get both.
