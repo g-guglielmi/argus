@@ -63,6 +63,21 @@ func TestTreeOrder(t *testing.T) {
 		}
 	}
 
+	// The unified 'sibling' kind (interleaved hosts + subgroups) is accepted and round-trips.
+	if err := st.SetTreeOrder(ctx, "myng", "sibling", []string{"h:12", "g:myng/Network"}); err != nil {
+		t.Fatalf("sibling set: %v", err)
+	}
+	sets, _ = st.TreeOrder(ctx)
+	var sib []string
+	for _, s := range sets {
+		if s.Scope == "myng" && s.Kind == "sibling" {
+			sib = s.Items
+		}
+	}
+	if len(sib) != 2 || sib[0] != "h:12" || sib[1] != "g:myng/Network" {
+		t.Fatalf("sibling order round-trip: %v", sib)
+	}
+
 	// Unknown kind is rejected.
 	if err := st.SetTreeOrder(ctx, "", "sensor", []string{"x"}); err == nil {
 		t.Fatalf("expected error for invalid kind")
